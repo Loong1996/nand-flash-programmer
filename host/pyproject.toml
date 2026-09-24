@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nsprog"
+version = "0.1.0"
+description = "Host software for the nsprog FPGA NAND / SPI flash programmer"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    "pyserial>=3.5",
+    "pyftdi>=0.55",
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+    "websockets>=10",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+nsprog = "nsprog.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+nsprog = ["data/*.csv", "web/static/*", "bitstream/*.fs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

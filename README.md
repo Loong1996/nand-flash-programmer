@@ -1,38 +1,67 @@
-# NAND / SPI Flash 编程器（自制）
+# nsprog · 自制 NAND / SPI Flash 编程器
 
-一个在 **macOS 上原生可用**、**完全开源**的并口 NAND + SPI Flash 编程器项目。
+基于 **Sipeed Tang Nano 9K（高云 GW1NR-9 FPGA）** 的开源 Flash 编程器：
 
-当前阶段：**方案设计 / 采购准备**。代码与硬件尚未开始。
+- **并口 NAND**：TSOP48，以及经转接板的 BGA63/BGA48，8 位
+- **SPI NOR / SPI NAND**：SOP8、WSON8、USON8、DIP8、SOIC16、测试夹在板读写
+- 所有转接座**同时接好**，换芯片不用改线
+- 上位机 **Python 跨平台**（macOS / Windows / Linux），提供**命令行**和**本地网页界面**
+- 芯片库：直接使用 [bbogush/nand_programmer](https://github.com/bbogush/nand_programmer) 的数据库，再加上 ONFI（并口 NAND）、SFDP（SPI NOR）自动识别，以及 SPI NOR/NAND 补充表
+- 全新协议：FPGA 是微操作执行引擎，**支持新芯片只改上位机**
+- 两条链路：板载 USB 串口（自动提速到 3 Mbaud），可选 FT232H 高速 FIFO（约 2–3 MB/s）
 
-## 目标
+> 状态：FPGA 设计、上位机、仿真和软件模拟器测试已完成；**尚未在实物上验证**。第一次使用请按 [上手指南](docs/quickstart.md) 逐步检查。
 
-- 支持 TSOP48 并口 NAND（8 位，ONFI/JEDEC 标准命令）
-- 支持 SPI NOR、SPI NAND
-- 上位机在 macOS 原生运行（同时兼顾 Linux / Windows）
-- 最终支持 1.8V 与 3.3V 芯片
-- 固件 / HDL / 上位机 / 硬件全部开源
+## 快速开始
 
-## 当前选定路线
+```bash
+brew install python pipx openfpgaloader      # macOS；Windows/Linux 见上手指南
+pipx install ./host
+nsprog fpga-flash                            # 烧写 Tang Nano 9K（一次性）
+nsprog info                                  # 检测编程器和芯片
+nsprog read -t nand backup.bin               # 备份并口 NAND（含 OOB）
+nsprog write -t spi firmware.bin             # 擦除 + 写入 + 校验 SPI Flash
+nsprog web                                   # 打开网页界面
+```
 
-**FPGA 方案**：Sipeed Tang Nano 9K（高云 GW1NR-9）+ LiteX 软核（VexRiscv）+ “仿 FSMC” NAND 控制器，
-移植开源项目 [bbogush/nand_programmer（NANDO）](https://github.com/bbogush/nand_programmer) 的固件逻辑，
-USB 高速通道使用 FT232H 同步 FIFO。开发全程使用可在 macOS 运行的开源工具链（Yosys / nextpnr / Apicula / openFPGALoader）。
+没有硬件也能体验：`nsprog -p emu info`、`nsprog web` 后在端口里选 “Software emulator”。
 
-备选：MCU 方案（STM32F103 兼容 NANDO，或 CH32V307 USB 高速），见 [方案总览](docs/01-overview.md)。
-
-## 文档目录
+## 文档
 
 | 文档 | 内容 |
 |---|---|
-| [docs/01-overview.md](docs/01-overview.md) | 方案总览：芯片类型、两层协议、MCU/FPGA 各方案对比、速度分析、决策记录 |
-| [docs/02-nando-and-market-boards.md](docs/02-nando-and-market-boards.md) | NANDO 开源项目分析、市售“NAND 编程器 4.1”板分析、在 Mac 上使用闭源板的办法、NANDO 代码复用评估 |
-| [docs/03-fpga-design.md](docs/03-fpga-design.md) | FPGA 方案设计：选型、I/O 电压、系统架构、仿 FSMC 外设寄存器草案、FT232H 接口、移植清单 |
-| [docs/04-hardware-bringup.md](docs/04-hardware-bringup.md) | 原型接线：Tang Nano 9K 引脚、TSOP48 引脚、接线表、上拉/去耦、首次读 ID 测试、排错 |
-| [docs/05-shopping-list.md](docs/05-shopping-list.md) | 分阶段采购清单与 Mac 软件环境 |
-| [docs/06-command-reference.md](docs/06-command-reference.md) | 并口 NAND / SPI NOR / SPI NAND 命令速查、坏块与 ECC 要点 |
-| [docs/07-roadmap.md](docs/07-roadmap.md) | 里程碑与验收标准 |
-| [fpga/constraints/tangnano9k_nand.cst](fpga/constraints/tangnano9k_nand.cst) | Tang Nano 9K 引脚约束草案（NAND 原型接线） |
+| [docs/quickstart.md](docs/quickstart.md) | **到货后上手指南**：安装、烧固件、接线检查、第一次读写、FT232H、常见问题 |
+| [docs/wiring.md](docs/wiring.md) | **接线表**：TSOP48、SOP8/WSON8/DIP8、SOIC16、测试夹、FT232H |
+| [docs/05-shopping-list.md](docs/05-shopping-list.md) | 采购清单（含 WSON8、SOIC16 座） |
+| [docs/protocol.md](docs/protocol.md) | PC ↔ FPGA 协议 NSP v1 |
+| [docs/03-fpga-design.md](docs/03-fpga-design.md) | FPGA 设计、构建与仿真 |
+| [docs/04-hardware-bringup.md](docs/04-hardware-bringup.md) | 实物调试与逻辑分析仪 |
+| [docs/06-command-reference.md](docs/06-command-reference.md) | NAND / SPI 命令速查、坏块与 ECC |
+| [docs/01-overview.md](docs/01-overview.md) | 方案对比与决策记录 |
+| [docs/02-nando-and-market-boards.md](docs/02-nando-and-market-boards.md) | NANDO 与市售“4.1”板分析 |
+| [docs/07-roadmap.md](docs/07-roadmap.md) | 路线图 |
+
+## 目录
+
+```
+fpga/rtl/            Verilog：引擎、NAND 总线、SPI、UART、FT245、顶层
+fpga/constraints/    Tang Nano 9K 引脚约束
+fpga/sim/            cocotb + Icarus 端到端仿真（Verilog 芯片模型 + 真实上位机驱动）
+fpga/build.py        构建比特流（yosys / nextpnr-himbaechel / apycula，pip 可装）
+host/                Python 上位机 nsprog（命令行、网页界面、驱动、芯片库、模拟器、测试）
+host/src/nsprog/bitstream/   预编译好的比特流
+docs/                文档
+```
+
+## 开发
+
+```bash
+pip install -e "host[test]" && pytest host                     # 上位机测试（用软件模拟器）
+python fpga/sim/run_sim.py                                     # RTL 仿真（需要 iverilog、cocotb）
+pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula
+python fpga/build.py --install                                 # 重新生成比特流
+```
 
 ## 许可证
 
-计划采用 GPLv3（与 NANDO 保持一致，移植其代码时必须如此）。自行从零编写的 HDL 部分可另行选择许可证。
+GPLv3（见 [LICENSE](LICENSE)）。芯片数据库 `host/src/nsprog/data/nando_*.csv` 来自 bbogush/nand_programmer（GPLv3）。

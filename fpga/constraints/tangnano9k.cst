@@ -1,0 +1,112 @@
+// Tang Nano 9K (GW1NR-LV9QN88PC6/I5) pin constraints for nsprog.
+// Pin numbers are FPGA package pins (printed on the board silkscreen).
+// Header pins are all in 3.3V banks; LEDs/buttons are in the 1.8V bank 3.
+// Wiring tables: docs/wiring.md
+
+// ---------------------------------------------------------------- board
+IO_LOC  "clk27" 52;
+IO_PORT "clk27" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+IO_LOC  "btn_n[0]" 3;
+IO_PORT "btn_n[0]" IO_TYPE=LVCMOS18 PULL_MODE=UP;
+IO_LOC  "btn_n[1]" 4;
+IO_PORT "btn_n[1]" IO_TYPE=LVCMOS18 PULL_MODE=UP;
+
+IO_LOC  "led_n[0]" 10;
+IO_PORT "led_n[0]" IO_TYPE=LVCMOS18;
+IO_LOC  "led_n[1]" 11;
+IO_PORT "led_n[1]" IO_TYPE=LVCMOS18;
+IO_LOC  "led_n[2]" 13;
+IO_PORT "led_n[2]" IO_TYPE=LVCMOS18;
+IO_LOC  "led_n[3]" 14;
+IO_PORT "led_n[3]" IO_TYPE=LVCMOS18;
+IO_LOC  "led_n[4]" 15;
+IO_PORT "led_n[4]" IO_TYPE=LVCMOS18;
+IO_LOC  "led_n[5]" 16;
+IO_PORT "led_n[5]" IO_TYPE=LVCMOS18;
+
+// On-board BL702 USB-UART
+IO_LOC  "uart_tx" 17;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "uart_rx" 18;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// ---------------------------------------------------------------- parallel NAND (TSOP48)
+IO_LOC  "nand_io[0]" 25;  // TSOP48 pin 29
+IO_PORT "nand_io[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[1]" 26;  // TSOP48 pin 30
+IO_PORT "nand_io[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[2]" 27;  // TSOP48 pin 31
+IO_PORT "nand_io[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[3]" 28;  // TSOP48 pin 32
+IO_PORT "nand_io[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[4]" 29;  // TSOP48 pin 41
+IO_PORT "nand_io[4]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[5]" 30;  // TSOP48 pin 42
+IO_PORT "nand_io[5]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[6]" 31;  // TSOP48 pin 43
+IO_PORT "nand_io[6]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_io[7]" 32;  // TSOP48 pin 44
+IO_PORT "nand_io[7]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+IO_LOC  "nand_cle" 85;    // TSOP48 pin 16
+IO_PORT "nand_cle" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "nand_ale" 84;    // TSOP48 pin 17
+IO_PORT "nand_ale" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "nand_we_n" 83;   // TSOP48 pin 18
+IO_PORT "nand_we_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_re_n" 82;   // TSOP48 pin 8
+IO_PORT "nand_re_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_ce_n" 81;   // TSOP48 pin 9
+IO_PORT "nand_ce_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "nand_wp_n" 80;   // TSOP48 pin 19 (pull-down = write protected)
+IO_PORT "nand_wp_n" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "nand_rb_n" 49;   // TSOP48 pin 7 (open drain)
+IO_PORT "nand_rb_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// ---------------------------------------------------------------- SPI flash (SOP8/WSON8/DIP8/SOIC16/clip)
+IO_LOC  "spi_cs_n" 39;    // 8-pin: 1  | SOIC16: 7
+IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "spi_sck" 63;     // 8-pin: 6  | SOIC16: 16
+IO_PORT "spi_sck" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "spi_io0" 79;     // 8-pin: 5 (DI)  | SOIC16: 15
+IO_PORT "spi_io0" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "spi_io1" 77;     // 8-pin: 2 (DO)  | SOIC16: 8
+IO_PORT "spi_io1" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "spi_io2" 76;     // 8-pin: 3 (WP#) | SOIC16: 9
+IO_PORT "spi_io2" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "spi_io3" 48;     // 8-pin: 7 (HOLD#) | SOIC16: 1
+IO_PORT "spi_io3" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// ---------------------------------------------------------------- FT232H (245 async FIFO)
+IO_LOC  "ft_d[0]" 41;     // ADBUS0
+IO_PORT "ft_d[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[1]" 42;     // ADBUS1
+IO_PORT "ft_d[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[2]" 51;     // ADBUS2
+IO_PORT "ft_d[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[3]" 53;     // ADBUS3
+IO_PORT "ft_d[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[4]" 54;     // ADBUS4
+IO_PORT "ft_d[4]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[5]" 55;     // ADBUS5
+IO_PORT "ft_d[5]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[6]" 56;     // ADBUS6
+IO_PORT "ft_d[6]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_d[7]" 57;     // ADBUS7
+IO_PORT "ft_d[7]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_rxf_n" 33;    // ACBUS0
+IO_PORT "ft_rxf_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_txe_n" 34;    // ACBUS1
+IO_PORT "ft_txe_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_rd_n" 40;     // ACBUS2
+IO_PORT "ft_rd_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_wr_n" 38;     // ACBUS3
+IO_PORT "ft_wr_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+// Reserved for 245 synchronous FIFO mode (inputs only in this build)
+IO_LOC  "ft_clkout" 35;   // ACBUS5 CLKOUT -> global clock pin GCLKT_4
+IO_PORT "ft_clkout" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "ft_siwu_n" 36;   // ACBUS4 SIWU# (also 10k pull-up to 3V3)
+IO_PORT "ft_siwu_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_oe_n" 37;     // ACBUS6 OE#
+IO_PORT "ft_oe_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
