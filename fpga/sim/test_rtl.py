@@ -542,9 +542,7 @@ async def stress_sync_fifo_long_read(dut):
     t0 = get_sim_time("ns")
     for i in range(4):
         if i == 1:
-            ft.stall_cycles = 1_200_000              # one 20 ms stall: the host stops reading
-        elif i == 2:
-            ft.stall_cycles = 2500
+            ft.stall_once = 1_200_000                # one 20 ms stall: the host stops reading
 
         def host_read():
             out = io.BytesIO()

@@ -111,6 +111,7 @@ class FtSyncModel:
         self.txq = bytearray()             # FPGA -> host
         self.stall_every = stall_every
         self.stall_cycles = stall_cycles
+        self.stall_once = 0                # length of the next stall only (then stall_cycles again)
         self.rx_gap_every = rx_gap_every
         self.errors = 0
         self.log_errors = True
@@ -155,7 +156,8 @@ class FtSyncModel:
                     self.txq.append(int(dv))
                     n_tx += 1
                     if self.stall_every and n_tx % self.stall_every == 0:
-                        stall = self.stall_cycles
+                        stall = self.stall_once or self.stall_cycles
+                        self.stall_once = 0
             self.oe_prev = oe_n
             # ---- new FT232H output values
             await Timer(4, "ns")
