@@ -7,7 +7,7 @@ Used by the test-suite and for trying the CLI / web UI without hardware
 from __future__ import annotations
 
 import struct
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 from . import protocol as P
 from .link import Link
@@ -474,7 +474,7 @@ class SpiNandModel:
 class Engine:
     """Byte-accurate interpreter of the NSP v1 protocol."""
 
-    ARGS = {P.ECHO: 1, P.SET_REG: 3, P.DELAY_US: 2, P.SET_BAUD: 2, P.NAND_CE: 1,
+    ARGS = {P.ECHO: 1, P.PIN_TEST: 2, P.SET_REG: 3, P.DELAY_US: 2, P.SET_BAUD: 2, P.NAND_CE: 1,
             P.NAND_CMD: 1, P.NAND_ADDR: 1, P.NAND_WRITE: 2, P.NAND_READ: 2,
             P.NAND_WAIT_RB: 2, P.NAND_POLL_STATUS: 4, P.SPI_CS: 1, P.SPI_WRITE: 2,
             P.SPI_READ: 2, P.SPI_XFER: 2, P.SPI_POLL: 1, P.SPI_READ4: 2}
@@ -490,11 +490,65 @@ class Engine:
         self.cs = False
         self.pin_ctrl = P.PIN_CTRL_DEFAULT
         self.flags = 0
-        self.regs = {}
+        self.regs: Dict[int, int] = {}
+        # pin test: mode, selected pin, and injectable wiring faults
+        self.pt_mode = 0
+        self.pt_sel = 0
+        self.shorts: list = []          # [(test_bit_a, test_bit_b), ...]
+        self.stuck: dict = {}           # {test_bit: level}  (short to GND / 3V3)
+        self.probe: dict = {}           # {test_bit: level}  (weak: a finger on the pin)
+
+    def pin_levels(self) -> int:
+        """Pad levels of the 21 test pins in the current pin-test mode."""
+        from . import wiring
+
+        n = wiring.N_TEST
+        parent = list(range(n))
+
+        def root(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+        for a, b in self.shorts:
+            parent[root(a)] = root(b)
+        nets: dict = {}
+        for i in range(n):
+            nets.setdefault(root(i), []).append(i)
+        drive = None
+        if self.pt_mode in (P.PT_LOW, P.PT_HIGH, P.PT_TOGGLE):
+            if self.pt_mode == P.PT_TOGGLE:
+                val = int(self.now // 250_000) % 2
+            else:
+                val = 1 if self.pt_mode == P.PT_HIGH else 0
+            drive = (self.pt_sel, val)
+        idle = wiring.idle_levels()
+        out = 0
+        for members in nets.values():
+            lv = None
+            for m in members:                       # strongest first: a hard short
+                if m in self.stuck:
+                    lv = self.stuck[m]
+            if lv is None and drive and drive[0] in members:
+                lv = drive[1]
+            if lv is None:
+                for m in members:
+                    if m in self.probe:
+                        lv = self.probe[m]
+            if lv is None:
+                lv = (idle >> members[0]) & 1
+            if lv:
+                for m in members:
+                    out |= 1 << m
+        return out
 
     # -- bus helpers
     def _tick(self, us=0.2):
         self.now += us
+
+    def _bus_nand(self) -> "Optional[NandModel]":
+        """The NAND model when it is selected and the bus is not parked."""
+        return self.nand if self._nand_on() else None
 
     def _nand_on(self):
         return self.nand is not None and self.ce and not (self.pin_ctrl & P.PIN_NAND_PARK)
@@ -552,14 +606,16 @@ class Engine:
 
     def _exec(self, f: bytes) -> None:
         op = f[0]
-        u16 = lambda i: struct.unpack_from("<H", f, i)[0]
+
+        def u16(i: int) -> int:
+            return struct.unpack_from("<H", f, i)[0]
         if op not in self.KNOWN:
             self.flags |= 1
         elif op == P.ECHO:
             self.out.append(f[1])
         elif op == P.INFO:
-            self.out += P.INFO_MAGIC + bytes([1, 1, 1, 1]) + struct.pack("<I", 27_000_000) + \
-                bytes([12, 0x7B, self.flags, 0])
+            self.out += P.INFO_MAGIC + bytes([1, 1, 2, 1]) + struct.pack("<I", 27_000_000) + \
+                bytes([12, 0xFB, self.flags, 0])
             self.flags = 0
         elif op == P.SET_REG:
             self.regs[f[1]] = u16(2)
@@ -571,6 +627,11 @@ class Engine:
             self._tick(u16(1))
         elif op == P.SET_BAUD:
             self.out.append(P.BAUD_ACK)
+        elif op == P.PIN_TEST:
+            self.pt_sel = f[1] & 0x1F
+            self.pt_mode = f[2] if f[2] <= P.PT_TOGGLE else 0
+            self._tick(10)
+            self.out += self.pin_levels().to_bytes(3, "little")
         elif op == P.GET_PINS:
             rb = self.nand.ready(self.now) if self.nand else True
             self.out += bytes([int(rb) | 2 | 0x30, 0xFF])
@@ -578,33 +639,39 @@ class Engine:
             self.ce = bool(f[1] & 1)
         elif op == P.NAND_CMD:
             self._tick()
-            if self._nand_on():
-                self.nand.command(f[1], self.now)
+            nd = self._bus_nand()
+            if nd:
+                nd.command(f[1], self.now)
         elif op == P.NAND_ADDR:
             for a in f[2:]:
                 self._tick()
-                if self._nand_on():
-                    self.nand.address(a, self.now)
+                nd = self._bus_nand()
+                if nd:
+                    nd.address(a, self.now)
         elif op == P.NAND_WRITE:
             for b in f[3:]:
                 self._tick()
-                if self._nand_on():
-                    self.nand.write(b, self.now)
+                nd = self._bus_nand()
+                if nd:
+                    nd.write(b, self.now)
         elif op == P.NAND_READ:
             n = u16(1)
             for _ in range(n):
                 self._tick()
-                self.out.append(self.nand.read(self.now) if self._nand_on() else 0xFF)
+                nd = self._bus_nand()
+                self.out.append(nd.read(self.now) if nd else 0xFF)
         elif op == P.NAND_WAIT_RB:
             self.out.append(self._wait(lambda: self.nand is None or self.nand.ready(self.now), u16(1)))
         elif op == P.NAND_POLL_STATUS:
             mask, val, tmo = f[1], f[2], u16(3)
-            if self._nand_on():
-                self.nand.command(0x70, self.now)
+            nd = self._bus_nand()
+            if nd:
+                nd.command(0x70, self.now)
             st = [0xFF]
 
             def cond():
-                st[0] = self.nand.read(self.now) if self._nand_on() else 0xFF
+                nd = self._bus_nand()
+                st[0] = nd.read(self.now) if nd else 0xFF
                 return (st[0] & mask) == val
             r = self._wait(cond, tmo)
             self.out += bytes([r, st[0]])
@@ -660,7 +727,8 @@ class EmulatorLink(Link):
     @classmethod
     def from_spec(cls, spec: str = "all") -> "EmulatorLink":
         spec = (spec or "all").lower()
-        nand = spi = None
+        nand: Optional[NandModel] = None
+        spi: Union[SpiNorModel, SpiNandModel, None] = None
         if spec in ("all", "nand", "all-spinand"):
             nand = NandModel(blocks=256)
         if spec in ("all", "spinor"):

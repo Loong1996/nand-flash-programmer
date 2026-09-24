@@ -519,6 +519,69 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
   .toasts { top: 58px; }
 }
 @media (max-width: 520px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .tile small { display: none; } .hb span { width: 2.35ch; } .field { width: 110px; } }
+
+/* ======================================================================
+   Wiring page
+   ====================================================================== */
+.wire-svg { width: 100%; height: auto; display: block; }
+.wire-svg text { font-family: -apple-system, "PingFang SC", "Segoe UI", sans-serif; }
+.wire-svg .pkg-body { fill: var(--fill2); stroke: var(--label3); stroke-width: 1.2; }
+.wire-svg .pin-stub { fill: var(--fill3); }
+.wire-svg .pin-stub.on { fill: var(--wc); }
+.wire-svg .pin-no { fill: var(--label3); font-size: 10px; }
+.wire-svg .pin-no.on { fill: var(--label); font-weight: 700; }
+.wire-svg .fbox { fill: var(--glass-strong); stroke: var(--wc); stroke-width: 1.5; }
+.wire-svg .fbox.done { fill: color-mix(in srgb, var(--wc) 18%, var(--glass-strong)); }
+.wire-svg .flabel { fill: var(--label); font-size: 12px; font-weight: 650; }
+.wire-svg .fsub { fill: var(--label2); font-size: 10.5px; }
+.wire-svg .wire { stroke: var(--wc); stroke-width: 2.2; fill: none; stroke-linecap: round; opacity: .85; }
+.wire-svg .wire.done { stroke-dasharray: none; opacity: 1; }
+.wire-svg .wname { fill: var(--wc); font-size: 11px; font-weight: 700; }
+.wire-svg .lvl { fill: var(--fill3); transition: fill .2s; }
+.wire-svg .lvl.hi { fill: var(--green); }
+.wire-svg .lvl.flash { animation: lvlflash .8s ease-out; }
+@keyframes lvlflash { 0% { r: 9; } 100% { r: 5; } }
+.wire-svg .title { fill: var(--label2); font-size: 12px; font-weight: 600; }
+.wtable .li { gap: 10px; }
+.wtable .sig { font-weight: 650; min-width: 86px; }
+.wtable .pinno { font-family: var(--mono); font-size: 13px; color: var(--label2); min-width: 150px; }
+.wtable .lvdot { width: 11px; height: 11px; border-radius: 50%; background: var(--fill3); flex: none; transition: all .25s; }
+.wtable .lvdot.hi { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.wtable .li.changed { animation: rowflash 1.2s ease-out; }
+#segPkg { overflow-x: auto; scrollbar-width: none; }
+#segPkg::-webkit-scrollbar { display: none; }
+@media (max-width: 860px) {
+  #segPkg { width: 100%; }
+  .wtable .li { flex-wrap: wrap; row-gap: 2px; }
+  .wtable .sig { flex: 1; min-width: 0; }
+  .wtable .pinno { min-width: 0; flex-basis: 100%; order: 8; padding-left: 34px; font-size: 12px; }
+  .wtable .li-l { flex-basis: 100%; order: 9; padding-left: 34px; }
+}
+@keyframes rowflash { 0% { background: color-mix(in srgb, var(--yellow) 45%, transparent); } 100% { background: transparent; } }
+.chk { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--label3); display: grid; place-items: center; color: #fff; flex: none;
+       cursor: pointer; transition: all .3s var(--spring); }
+.chk .ic { width: 14px; height: 14px; stroke-width: 3; opacity: 0; }
+.chk.on { background: var(--green); border-color: var(--green); }
+.chk.on .ic { opacity: 1; }
+.docres .m { display: flex; gap: 12px; padding: 12px 18px; align-items: flex-start; }
+.docres .m + .m { border-top: 1px solid var(--sep); }
+.docres .st { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: #fff; flex: none; }
+.docres .st .ic { width: 15px; height: 15px; stroke-width: 2.8; }
+.docres .d { font-size: 13px; color: var(--label2); white-space: pre-line; }
+.docres .h { font-size: 12.5px; margin-top: 4px; color: color-mix(in srgb, var(--accent) 80%, var(--label)); }
+.print-only { display: none; }
+@media print {
+  .ambient, .sidebar, .tabbar, .island, .toasts, .sheet-wrap, .no-print { display: none !important; }
+  html, body { background: #fff !important; color: #000; }
+  main { margin: 0 !important; padding: 0 !important; max-width: none; }
+  .page { display: none !important; }
+  #page-wiring { display: block !important; animation: none; }
+  .glass { background: #fff !important; box-shadow: none !important; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; border: 1px solid #ccc; }
+  .glass::before { display: none; }
+  .print-only { display: block; }
+  .screen-only { display: none !important; }
+  .wire-print { break-inside: avoid; page-break-inside: avoid; margin-bottom: 18px; }
+}
 </style>
 </head>
 <body>
@@ -561,6 +624,9 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></symbol>
+  <symbol id="i-cable" viewBox="0 0 24 24"><path d="M5 4v5a3 3 0 0 0 3 3h8a3 3 0 0 1 3 3v5"/><rect x="3" y="2" width="4" height="3" rx="1"/><rect x="17" y="19" width="4" height="3" rx="1"/><path d="M9 12v8M15 4v8"/></symbol>
+  <symbol id="i-print" viewBox="0 0 24 24"><path d="M7 9V3.5h10V9M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2"/><rect x="7" y="14" width="10" height="7" rx="1"/></symbol>
+  <symbol id="i-stetho" viewBox="0 0 24 24"><path d="M6 3v6a4 4 0 0 0 8 0V3"/><path d="M10 13v2a5 5 0 0 0 10 0v-2"/><circle cx="20" cy="11" r="2"/></symbol>
   <symbol id="i-unlink" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/><path d="M3.5 3.5l17 17"/></symbol>
 </svg>
 
@@ -618,13 +684,40 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
     </div>
 
     <div>
-      <div class="sec-h">引脚诊断 <button class="btn sm" id="btnPins" style="margin-left:auto"><svg class="ic"><use href="#i-pulse"/></svg>读取引脚</button></div>
+      <div class="sec-h">引脚诊断 <button class="btn sm" id="btnPins" style="margin-left:auto"><svg class="ic"><use href="#i-pulse"/></svg>读取引脚</button>
+        <a class="btn sm" href="#/wiring" id="btnDoctorGo"><svg class="ic"><use href="#i-stetho"/></svg>接线自检</a></div>
       <div class="glass card">
         <div class="pins" id="pins"><div class="muted">连接后读取引脚电平，用来检查杜邦线接线。</div></div>
         <div class="sec-f" style="margin:12px 0 0">不插芯片时：数据线 IO0–7 应全亮（上拉为 1），R/B# 就绪。某一位不亮多半是那根线松了或接错了。</div>
       </div>
     </div>
   </div>
+</section>
+
+<!-- ================================================================ 接线 -->
+<section class="page" id="page-wiring">
+  <div class="ph"><div><div class="eyebrow" id="wireProgress">按 FPGA 丝印号接线</div><h1>接线</h1></div>
+    <div class="acts no-print">
+      <button class="btn" id="wirePrint"><svg class="ic"><use href="#i-print"/></svg>打印接线表</button>
+      <button class="btn filled" id="docRun"><svg class="ic"><use href="#i-stetho"/></svg>一键自检</button></div></div>
+  <div class="print-only"><h2 style="margin:0 0 6px">nsprog 接线表</h2>
+    <p style="margin:0 0 12px;font-size:12px">Tang Nano 9K 的 79–86 脚是 1.8V，不要接。68–75 脚与 HDMI/屏幕座共用，接线时不要插 HDMI 线和屏幕。FT232H 只共地，不接它的电源。</p></div>
+  <div id="docCard" class="hidden no-print" style="margin-bottom:18px">
+    <div class="sec-h">自检结果 <span class="pill" id="docSummary" style="margin-left:auto"></span></div>
+    <div class="glass list docres" id="docList"></div>
+  </div>
+  <div class="screen-only" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
+    <div class="seg" id="segPkg"></div>
+    <div class="glass" style="display:flex;align-items:center;gap:10px;padding:6px 8px 6px 14px;border-radius:999px;margin-left:auto">
+      <span style="font-size:13.5px;font-weight:600">实时电平</span><label class="switch"><input type="checkbox" id="wireLive"><span></span></label></div>
+  </div>
+  <div class="glass card screen-only" style="padding:14px 16px"><svg class="wire-svg" id="wireSvg"></svg></div>
+  <div class="sec-f screen-only" id="wireHint">左侧方框是 Tang Nano 9K 排针（按丝印号找），右侧是芯片座 / 模块的引脚。接好一根点一下右边的圆圈打勾，进度保存在这台电脑的浏览器里。</div>
+  <div class="sec-h screen-only">逐根检查 <span class="muted" style="margin-left:auto;font-weight:400" id="wireCount"></span>
+    <button class="btn sm no-print" id="wireReset">清除勾选</button></div>
+  <div class="glass list wtable screen-only" id="wireTable"></div>
+  <div class="sec-f screen-only">“闪烁”会让那一根线每秒翻转两次（其余引脚释放）：用万用表或 LED 在座子对应脚上找到它就说明这根线通了。“实时电平”打开后，用一根接 GND 的杜邦线碰上拉的座子脚（接 3V3 碰下拉的脚），对应那一行会亮起来。</div>
+  <div class="print-only" id="wirePrintAll"></div>
 </section>
 
 <!-- ================================================================ 芯片 -->
@@ -818,7 +911,9 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
         <div class="li"><div class="li-l"><div class="t">上位机版本</div></div><span class="li-r mono" id="aboutVer">—</span></div>
         <div class="li"><div class="li-l"><div class="t">FPGA 固件</div></div><span class="li-r mono" id="aboutGw">未连接</span></div>
         <div class="li"><div class="li-l"><div class="t">设置与历史保存在</div></div><span class="li-r mono">~/.nsprog</span></div>
-        <div class="li"><div class="li-l"><div class="t">快捷键</div><div class="s">⌘/Ctrl + 1…8 切换页面</div></div></div>
+        <div class="li"><div class="li-l"><div class="t">快捷键</div><div class="s">⌘/Ctrl + 1…9 切换页面</div></div></div>
+        <div class="li hidden" id="quitRow"><div class="li-l"><div class="t">退出程序</div><div class="s">关闭后台服务；再次打开 nsprog 应用即可重新使用</div></div>
+          <button class="btn sm tint-red" id="btnQuit">退出</button></div>
       </div>
       <div class="sec-f">协议 NSP v1 · 硬件：Sipeed Tang Nano 9K（可选 FT232H 高速通道）</div>
     </div>
@@ -926,6 +1021,7 @@ window.addEventListener('resize', () => { refreshSegs(); hexLayout(); drawBad();
    ====================================================================== */
 const PAGES = [
   {id: 'device', t: '设备', i: 'plug', c: 'blue', tab: 1},
+  {id: 'wiring', t: '接线', i: 'cable', c: 'red'},
   {id: 'chip', t: '芯片', i: 'chip', c: 'indigo', tab: 1},
   {id: 'rw', t: '读写', i: 'rw', c: 'green', tab: 1},
   {id: 'data', t: '数据', i: 'hex', c: 'orange', tab: 1},
@@ -954,11 +1050,12 @@ function showPage(id) {
   requestAnimationFrame(() => { refreshSegs(); if (id === 'data') { hexLayout(); drawBad(); } });
   if (id === 'history') loadHistory();
   if (id === 'lib' && !libLoaded) loadLib();
+  if (id === 'wiring') wiringShow(); else wiringHide();
   window.scrollTo({top: 0});
 }
 window.addEventListener('hashchange', () => showPage(location.hash.replace(/^#\/?/, '')));
 document.addEventListener('keydown', e => {
-  if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) { e.preventDefault(); location.hash = '#/' + PAGES[+e.key - 1].id; }
+  if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) { e.preventDefault(); location.hash = '#/' + PAGES[+e.key - 1].id; }
 });
 
 /* ======================================================================
@@ -978,10 +1075,11 @@ function render(s) {
   if (!settingsInit && s.settings) initSettings(s.settings);
   applySettings(s.settings || {});
   if (!s[target]) target = s.nand ? 'nand' : (s.spi ? 'spi' : null);
-  renderShell(s); renderDevice(s); renderChips(s); renderRW(s); renderData(s); renderJob(s.job);
+  renderShell(s); renderDevice(s); renderChips(s); renderRW(s); renderData(s); renderJob(s.job); renderWiring(s);
   $('histBadge').textContent = s.history_count || '';
   $('aboutVer').textContent = s.version || '—';
   $('aboutGw').textContent = s.info ? 'v' + s.info.gw_version : '未连接';
+  $('quitRow').classList.toggle('hidden', !s.app_mode);
 }
 const busy = () => !!(S && S.job && S.job.state === 'running');
 
@@ -1629,9 +1727,236 @@ async function loadHistory() {
   } catch (e) { fail(e); }
 }
 $('histList').onclick = e => { const r = e.target.closest('.li.tap'); if (r) r.classList.toggle('open'); };
+$('btnQuit').onclick = async () => {
+  const v = await ask({icon: 'x', tint: 'red', title: '退出 nsprog？', text: '后台服务会停止，这个页面也会失效。', buttons: [{label: '退出', value: 'go', cls: 'filled red'}]});
+  if (!v) return;
+  try { await post('/api/quit'); } catch (e) { fail(e); return; }
+  document.body.innerHTML = '<div style="display:grid;place-items:center;height:100vh;font:17px -apple-system,sans-serif;color:#888">nsprog 已退出，可以关闭这个标签页。</div>';
+};
 $('histClear').onclick = async () => {
   const v = await ask({icon: 'trash', tint: 'red', title: '清空历史记录？', text: '只删除记录，不影响任何文件。', buttons: [{label: '清空', value: 'go', cls: 'filled red'}]});
   if (v) { try { await api('/api/history', {method: 'DELETE'}); loadHistory(); render(await api('/api/state')); } catch (e) { fail(e); } }
+};
+
+/* ======================================================================
+   Wiring page: diagrams, checklist, live levels, blink, doctor
+   ====================================================================== */
+let WIRE = null, wirePkg = 'tsop48', wireLive = false, wireBlink = -1, wireLevels = null, wireTimer = 0, wireBusy = false;
+const WCOL = {nand: 'var(--indigo)', spi: 'var(--teal)', ft232h: 'var(--orange)', power: 'var(--red)'};
+const PKG_TABS = [['tsop48', 'TSOP48'], ['soic8', 'SOP8 · WSON8'], ['soic16', 'SOIC16'], ['ft232h', 'FT232H'], ['power', '电源']];
+function wireDone() { try { return new Set(JSON.parse(localStorage.getItem('nsprog.wiring') || '[]')); } catch (e) { return new Set(); } }
+function wireSave(set) { try { localStorage.setItem('nsprog.wiring', JSON.stringify([...set])); } catch (e) { /* private mode */ } }
+async function wiringLoad() { if (!WIRE) { try { WIRE = await api('/api/wiring'); } catch (e) { fail(e); } } return WIRE; }
+makeSeg($('segPkg'), PKG_TABS, 'tsop48', v => { wirePkg = v; drawWiring(); });
+
+/* rows for one package: [{sig, pins:[...], key}] */
+function wireRows(pkg) {
+  if (!WIRE) return [];
+  if (pkg === 'power') return WIRE.signals.filter(s => s.group === 'power').flatMap(s =>
+    Object.entries(s.pins).map(([k, v]) => ({sig: s, pins: v.split(/,\s*/), pkgKey: k, key: 'power:' + s.name + ':' + k})));
+  return WIRE.signals.filter(s => s.pins[pkg]).map(s => ({sig: s, pins: s.pins[pkg].split(/,\s*/), pkgKey: pkg, key: pkg + ':' + s.name}));
+}
+/* package pin layout: pin number -> {side: 'L'|'R', slot} */
+function pkgLayout(pkg, rows) {
+  const n = {tsop48: 48, soic8: 8, soic16: 16}[pkg];
+  const pos = {};
+  if (n) {
+    const h = n / 2;
+    for (let i = 1; i <= n; i++) pos[i] = i <= h ? {side: 'L', slot: i - 1} : {side: 'R', slot: n - i};
+    return {pos, slots: h, n};
+  }
+  rows.forEach((r, i) => { pos[r.pins[0]] = {side: 'R', slot: i}; });     // module: one column
+  return {pos, slots: rows.length, n: 0};
+}
+function svgEl(tag, attrs, text) {
+  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function buildDiagram(svg, pkg, done, levels) {
+  svg.innerHTML = '';
+  const rows = wireRows(pkg);
+  if (pkg === 'power') { svg.setAttribute('viewBox', '0 0 10 1'); return; }
+  const L = pkgLayout(pkg, rows);
+  const pitch = pkg === 'tsop48' ? 19 : pkg === 'ft232h' ? 26 : 40;
+  const top = 36, W = 820, bodyW = pkg === 'ft232h' ? 150 : 150, bx = (W - bodyW) / 2;
+  const H = top + L.slots * pitch + 26;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const title = {tsop48: 'TSOP48（缺角 / 圆点 = 1 脚，俯视）', soic8: 'SOP8 / WSON8 / DIP8（圆点 = 1 脚，俯视）',
+    soic16: 'SOIC16（圆点 = 1 脚，俯视）', ft232h: 'FT232H 模块（按模块丝印）'}[pkg];
+  svg.appendChild(svgEl('text', {x: W / 2, y: 18, 'text-anchor': 'middle', class: 'title'}, title));
+  svg.appendChild(svgEl('text', {x: 20, y: 18, class: 'title'}, 'Tang Nano 9K'));
+  svg.appendChild(svgEl('text', {x: W - 20, y: 18, 'text-anchor': 'end', class: 'title'}, 'Tang Nano 9K'));
+  const body = svgEl('rect', {x: bx, y: top - 10, width: bodyW, height: L.slots * pitch + 8, rx: 8, class: 'pkg-body'});
+  svg.appendChild(body);
+  if (L.n) svg.appendChild(svgEl('circle', {cx: bx + 30, cy: top - 1, r: 3.5, fill: 'var(--label2)'}));
+  const used = {};
+  rows.forEach(r => r.pins.forEach(p => { used[p] = r; }));
+  const y = slot => top + slot * pitch + pitch / 2 - 6;
+  // package pins
+  for (const [no, at] of Object.entries(L.pos)) {
+    const r = used[no], on = !!r;
+    const x = at.side === 'L' ? bx - 14 : bx + bodyW;
+    const g = svgEl('g', {style: on ? `--wc:${WCOL[r.sig.group]}` : ''});
+    g.appendChild(svgEl('rect', {x, y: y(at.slot) - 4, width: 14, height: 8, rx: 2, class: 'pin-stub' + (on ? ' on' : '')}));
+    g.appendChild(svgEl('text', {x: at.side === 'L' ? bx + 8 : bx + bodyW - 8, y: y(at.slot) + 3.5,
+      'text-anchor': at.side === 'L' ? 'start' : 'end', class: 'pin-no' + (on ? ' on' : '')}, pkg === 'ft232h' ? no : no));
+    svg.appendChild(g);
+  }
+  // FPGA boxes + wires
+  rows.forEach(r => {
+    const s = r.sig;
+    r.pins.forEach((p, k) => {
+      const at = L.pos[p]; if (!at) return;
+      const left = at.side === 'L', yy = y(at.slot);
+      const boxW = 118, bxX = left ? 20 : W - 20 - boxW;
+      const g = svgEl('g', {style: `--wc:${WCOL[s.group]}`});
+      const px = left ? bx - 14 : bx + bodyW + 14, fx = left ? bxX + boxW : bxX;
+      g.appendChild(svgEl('path', {d: `M${fx} ${yy} L${px} ${yy}`, class: 'wire' + (done.has(r.key) ? ' done' : '')}));
+      g.appendChild(svgEl('text', {x: (fx + px) / 2, y: yy - 4, 'text-anchor': 'middle', class: 'wname'}, s.name));
+      g.appendChild(svgEl('rect', {x: bxX, y: yy - 10, width: boxW, height: 20, rx: 10, class: 'fbox' + (done.has(r.key) ? ' done' : '')}));
+      g.appendChild(svgEl('text', {x: bxX + 14, y: yy + 4, class: 'flabel'}, s.fpga != null ? 'FPGA ' + s.fpga : (s.name === 'VCC' ? '3V3' : 'GND')));
+      if (s.test != null) {
+        const lv = levels != null ? (levels >> s.test) & 1 : 0;
+        g.appendChild(svgEl('circle', {cx: bxX + boxW - 14, cy: yy, r: 5, class: 'lvl' + (lv ? ' hi' : ''), 'data-bit': s.test}));
+      }
+      svg.appendChild(g);
+    });
+  });
+}
+function drawWiring() {
+  if (!WIRE) return;
+  const done = wireDone(), rows = wireRows(wirePkg);
+  buildDiagram($('wireSvg'), wirePkg, done, wireLevels);
+  $('wireSvg').parentElement.classList.toggle('hidden', wirePkg === 'power');
+  const cnt = rows.filter(r => done.has(r.key)).length;
+  $('wireCount').textContent = `已接 ${cnt} / ${rows.length}`;
+  const all = PKG_TABS.map(([k]) => wireRows(k)).flat();
+  $('wireProgress').textContent = `全部进度 ${all.filter(r => done.has(r.key)).length} / ${all.length} · 按 FPGA 丝印号接线`;
+  const connected = S && S.connected, pt = S && S.info && S.info.caps & 0x80;
+  $('wireTable').innerHTML = rows.map(r => {
+    const s = r.sig, lv = wireLevels != null && s.test != null ? (wireLevels >> s.test) & 1 : null;
+    const pinTxt = r.pkgKey === 'ft232h' ? r.pins.join('、') : '第 ' + r.pins.join('、') + ' 脚';
+    const pkgName = {tsop48: 'TSOP48', soic8: '8 脚座', soic16: 'SOIC16', ft232h: 'FT232H'}[r.pkgKey];
+    return `<div class="li" data-key="${esc(r.key)}" data-bit="${s.test == null ? '' : s.test}">
+      <span class="chk ${done.has(r.key) ? 'on' : ''}" data-chk="${esc(r.key)}">${ic('check')}</span>
+      <span class="sig" style="color:${WCOL[s.group]}">${esc(s.name)}</span>
+      <span class="pinno">${s.fpga != null ? 'FPGA ' + s.fpga : (s.name === 'VCC' ? '3V3' : 'GND')} → ${pkgName} ${esc(pinTxt)}</span>
+      <div class="li-l"><div class="s">${esc(s.note || (s.pull === 'up' ? '空闲为高（上拉）' : s.pull === 'down' ? '空闲为低（下拉）' : ''))}</div></div>
+      ${s.test != null ? `<span class="lvdot ${lv ? 'hi' : ''}" title="实时电平"></span>
+        <button class="btn sm ${wireBlink === s.test ? 'tint-red' : ''}" data-blink="${s.test}" ${connected && pt ? '' : 'disabled'}>${wireBlink === s.test ? '停止' : '闪烁'}</button>` : ''}
+    </div>`;
+  }).join('');
+  $('wireLive').disabled = !(connected && pt);
+  $('docRun').disabled = !connected || busy();
+  $('wireHint').textContent = connected ? (pt ? '左侧方框是 Tang Nano 9K 排针（按丝印号找），右侧是芯片座 / 模块引脚。接好一根点一下圆圈打勾，进度保存在这台电脑的浏览器里。'
+    : '当前固件不支持引脚测试（需要 1.2 以上），先在命令行运行 nsprog fpga-flash 更新。')
+    : '左侧方框是 Tang Nano 9K 排针（按丝印号找），右侧是芯片座 / 模块引脚。连接编程器后可以看实时电平、让某根线闪烁、做一键自检。';
+}
+$('wireTable').addEventListener('click', async e => {
+  const c = e.target.closest('[data-chk]');
+  if (c) { const set = wireDone(); const k = c.dataset.chk; set.has(k) ? set.delete(k) : set.add(k); wireSave(set); drawWiring(); return; }
+  const b = e.target.closest('[data-blink]');
+  if (b) {
+    const bit = +b.dataset.blink;
+    await setLive(false);
+    try {
+      if (wireBlink === bit) { await post('/api/pintest', {pin: 0, mode: 0}); wireBlink = -1; }
+      else { await post('/api/pintest', {pin: bit, mode: 4}); wireBlink = bit; toast('这根线正在每秒翻转两次，其余引脚已释放'); }
+    } catch (err) { fail(err); }
+    drawWiring();
+  }
+});
+$('wireReset').onclick = async () => {
+  const v = await ask({icon: 'trash', tint: 'red', title: '清除所有勾选？', text: '只清除这台电脑上的接线进度记录。', buttons: [{label: '清除', value: 'go', cls: 'filled red'}]});
+  if (v) { wireSave(new Set()); drawWiring(); }
+};
+async function setLive(on) {
+  if (on === wireLive) return;
+  wireLive = on; $('wireLive').checked = on;
+  clearTimeout(wireTimer);
+  if (on) {
+    wireBlink = -1;
+    livePoll();
+    toast('探针模式：所有 Flash 引脚已释放，碰到哪根线哪一行就会闪');
+  } else {
+    wireLevels = null;
+    try { if (S && S.connected) await post('/api/pintest', {pin: 0, mode: 0}); } catch (e) { /* ignore */ }
+    drawWiring();
+  }
+}
+async function livePoll() {
+  if (!wireLive || wireBusy) return;
+  wireBusy = true;
+  try {
+    const r = await post('/api/pintest', {pin: 0, mode: 1});
+    const prev = wireLevels;
+    wireLevels = r.levels;
+    drawWiring();
+    if (prev != null && prev !== r.levels) {
+      const diff = prev ^ r.levels;
+      for (let i = 0; i < 21; i++) if (diff >> i & 1) {
+        const row = document.querySelector(`#wireTable .li[data-bit="${i}"]`);
+        if (row) { row.classList.add('changed'); row.scrollIntoView({block: 'nearest', behavior: 'smooth'}); }
+        const sig = WIRE.signals.find(s => s.test === i);
+        if (sig) toast(`${sig.name}（FPGA ${sig.fpga}）变为${(r.levels >> i) & 1 ? '高' : '低'}`, 'info', 2200);
+      }
+    }
+  } catch (e) { fail(e); await setLive(false); }
+  finally { wireBusy = false; }
+  if (wireLive) wireTimer = setTimeout(livePoll, 300);
+}
+$('wireLive').onchange = () => setLive($('wireLive').checked);
+async function wiringShow() { await wiringLoad(); drawWiring(); }
+function wiringHide() { if (wireLive) setLive(false); if (wireBlink >= 0) { wireBlink = -1; post('/api/pintest', {pin: 0, mode: 0}).catch(() => {}); } }
+function renderWiring(s) {
+  if (page !== 'wiring' || !WIRE) return;
+  if (!s.connected && (wireLive || wireBlink >= 0)) { wireLive = false; wireBlink = -1; wireLevels = null; $('wireLive').checked = false; }
+  if (!wireLive) drawWiring();
+}
+const DOC_ST = {ok: ['green', 'check'], warn: ['orange', 'warn'], fail: ['red', 'x'], skip: ['gray', 'more'], info: ['blue', 'info']};
+$('docRun').onclick = async () => {
+  if (!S || !S.connected) { toast('请先连接编程器', 'warn'); location.hash = '#/device'; return; }
+  await setLive(false);
+  wireBlink = -1;
+  const b = $('docRun'); b.disabled = true; b.innerHTML = ic('refresh') + '自检中…';
+  try {
+    const r = await post('/api/doctor', {drive: true});
+    $('docCard').classList.remove('hidden');
+    const worst = r.checks.some(c => c.status === 'fail') ? 'red' : r.checks.some(c => c.status === 'warn') ? 'orange' : 'green';
+    $('docSummary').className = 'pill ' + worst; $('docSummary').textContent = r.summary;
+    $('docList').innerHTML = r.checks.map(c => {
+      const [col, i] = DOC_ST[c.status] || DOC_ST.info;
+      return `<div class="m"><span class="st sq ${col}">${ic(i)}</span><div style="min-width:0">
+        <div class="t" style="font-weight:600">${esc(c.title)}</div><div class="d">${esc(c.detail)}</div>
+        ${c.hint && c.status !== 'ok' ? `<div class="h">→ ${esc(c.hint)}</div>` : ''}</div></div>`;
+    }).join('');
+    toast('自检完成：' + r.summary, worst === 'green' ? 'ok' : worst === 'red' ? 'err' : 'warn');
+    $('docCard').scrollIntoView({behavior: 'smooth', block: 'start'});
+  } catch (e) { fail(e); }
+  finally { b.disabled = false; b.innerHTML = ic('stetho') + '一键自检'; }
+};
+$('wirePrint').onclick = async () => {
+  await wiringLoad();
+  const done = wireDone();
+  const box = $('wirePrintAll'); box.innerHTML = '';
+  for (const [k, name] of PKG_TABS) {
+    const rows = wireRows(k);
+    const div = document.createElement('div'); div.className = 'wire-print';
+    div.innerHTML = `<h3 style="margin:10px 0 6px">${esc(name)}</h3>`;
+    if (k !== 'power') {
+      const svg = svgEl('svg', {class: 'wire-svg'}); buildDiagram(svg, k, done, null); div.appendChild(svg);
+    }
+    const t = document.createElement('table');
+    t.style.cssText = 'width:100%;border-collapse:collapse;font-size:12px;margin-top:6px';
+    t.innerHTML = '<tr><th align="left">☐</th><th align="left">信号</th><th align="left">FPGA</th><th align="left">引脚</th><th align="left">说明</th></tr>' +
+      rows.map(r => `<tr style="border-top:1px solid #ddd"><td>${done.has(r.key) ? '☑' : '☐'}</td><td>${esc(r.sig.name)}</td>
+        <td>${r.sig.fpga != null ? r.sig.fpga : (r.sig.name === 'VCC' ? '3V3' : 'GND')}</td><td>${esc(r.pkgKey)} ${esc(r.pins.join(', '))}</td><td>${esc(r.sig.note || '')}</td></tr>`).join('');
+    div.appendChild(t);
+    box.appendChild(div);
+  }
+  window.print();
 };
 
 /* ======================================================================

@@ -50,8 +50,10 @@ def test_web_flow():
     assert got[:len(data)] == data and len(got) == 5 * 4096
     assert c.get("/api/result/bytes?offset=100&length=50").content == got[100:150]
     needle = data[7000:7006]
-    assert c.get("/api/result/find", params={"q": needle.hex(), "hex": True}).json()["offset"] == got.find(needle)
-    assert c.get("/api/result/find", params={"q": needle.hex(), "hex": True, "start": 12000}).json()["offset"] == got.find(needle, 12000)
+    def find(**kw):
+        return c.get("/api/result/find", params=kw).json()["offset"]
+    assert find(q=needle.hex(), hex=True) == got.find(needle)
+    assert find(q=needle.hex(), hex=True, start=12000) == got.find(needle, 12000)
     assert c.get("/api/result/find", params={"q": "\u0000no-such-text\u0000"}).json()["offset"] == -1
 
     c.post("/api/job/verify?target=spi&start=1", content=data)

@@ -12,10 +12,13 @@ Unknown parts are handled through ONFI (parallel NAND) and SFDP (SPI NOR).
 from __future__ import annotations
 
 import csv
+import logging
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List, Optional, Sequence
+
+log = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
@@ -33,6 +36,14 @@ def _int(v: str) -> Optional[int]:
     if v in ("", "-"):
         return None
     return int(v, 0)
+
+
+def _req(c: Sequence[Optional[int]], i: int) -> int:
+    """Required numeric column ``i`` of a parsed row."""
+    v = c[i] if i < len(c) else None
+    if v is None:
+        raise ValueError("missing column %d" % i)
+    return v
 
 
 _VOLTAGE_RULES = [
@@ -139,15 +150,19 @@ def nand_chips() -> List[NandChip]:
         # status, set feat, en ECC addr, en ECC val, dis ECC val, ID1..ID5
         t = {k: _int(v) for k, v in zip(_TIMING_COLS, r[6:20])}
         c = [_int(v) for v in r[20:]]
-        chips.append(NandChip(
-            name=r[0], page_size=int(r[1]), block_size=int(r[2]), total_size=int(r[3]),
-            spare_size=int(r[4]), bb_mark_off=int(r[5]),
-            row_cycles=c[0], col_cycles=c[1],
-            cmd_read1=c[2], cmd_read2=c[3], cmd_read_spare=c[4], cmd_read_id=c[5],
-            cmd_reset=c[6], cmd_write1=c[7], cmd_write2=c[8], cmd_erase1=c[9],
-            cmd_erase2=c[10], cmd_status=c[11], ids=tuple(c[16:21]),
-            timings_ns={k: v for k, v in t.items() if v is not None},
-            voltage=volts.get(r[0], 3.3), source="nando"))
+        try:
+            chips.append(NandChip(
+                name=r[0], page_size=int(r[1]), block_size=int(r[2]), total_size=int(r[3]),
+                spare_size=int(r[4]), bb_mark_off=int(r[5]),
+                row_cycles=_req(c, 0), col_cycles=_req(c, 1),
+                cmd_read1=_req(c, 2), cmd_read2=c[3], cmd_read_spare=c[4], cmd_read_id=_req(c, 5),
+                cmd_reset=_req(c, 6), cmd_write1=_req(c, 7), cmd_write2=_req(c, 8),
+                cmd_erase1=_req(c, 9), cmd_erase2=_req(c, 10), cmd_status=_req(c, 11),
+                ids=tuple(c[16:21]),
+                timings_ns={k: v for k, v in t.items() if v is not None},
+                voltage=volts.get(r[0], 3.3), source="nando"))
+        except ValueError as e:
+            log.warning("chip DB: skipping parallel NAND %s (%s)", r[0], e)
     return chips
 
 
@@ -221,12 +236,17 @@ def spi_nor_chips() -> List[SpiNorChip]:
         # busy bit, busy state, max kHz, ID1..ID5
         c = [_int(v) for v in r[1:]]
         ids = bytes(i for i in c[13:18] if i is not None)
-        chips.append(SpiNorChip(
-            name=r[0], page_size=c[0], block_size=c[1], total_size=c[2], page_off=c[3],
-            read_cmd=c[4], id_cmd=c[5], write_cmd=c[6], write_en_cmd=c[7], erase_cmd=c[8],
-            status_cmd=c[9], busy_bit=c[10], busy_state=c[11], max_khz=c[12], ids=ids,
-            source="nando", erase_types={c[1]: c[8]},
-            chip_erase_cmd=0xC7 if (1 << c[3]) == c[0] else None))
+        try:
+            page, block, off, erase = _req(c, 0), _req(c, 1), _req(c, 3), _req(c, 8)
+            chips.append(SpiNorChip(
+                name=r[0], page_size=page, block_size=block, total_size=_req(c, 2), page_off=off,
+                read_cmd=_req(c, 4), id_cmd=_req(c, 5), write_cmd=_req(c, 6), write_en_cmd=c[7],
+                erase_cmd=erase, status_cmd=_req(c, 9), busy_bit=_req(c, 10),
+                busy_state=_req(c, 11), max_khz=_req(c, 12), ids=ids,
+                source="nando", erase_types={block: erase},
+                chip_erase_cmd=0xC7 if (1 << off) == page else None))
+        except ValueError as e:
+            log.warning("chip DB: skipping SPI NOR %s (%s)", r[0], e)
     for r in _rows("spi_nor_ids.csv"):
         size = int(r[2])
         chips.append(SpiNorChip(
@@ -350,15 +370,15 @@ def find_spi_nand(raw9f: bytes, id_after_addr: bytes = b"") -> Optional[SpiNandC
 
 def all_chips() -> List[dict]:
     """Flat listing for the CLI / web UI."""
-    out = []
-    for c in nand_chips():
-        out.append({"type": "nand", "name": c.name, "size": c.total_size, "voltage": c.voltage,
-                    "source": c.source, "id": bytes(i for i in c.ids if i is not None).hex().upper(),
-                    "detail": c.describe()})
-    for c in spi_nor_chips():
-        out.append({"type": "spinor", "name": c.name, "size": c.total_size, "voltage": c.voltage,
-                    "source": c.source, "id": c.ids.hex().upper(), "detail": c.describe()})
-    for c in spi_nand_chips():
-        out.append({"type": "spinand", "name": c.name, "size": c.total_size, "voltage": c.voltage,
-                    "source": c.source, "id": c.ids.hex().upper(), "detail": c.describe()})
+    out: List[dict] = []
+    for n in nand_chips():
+        out.append({"type": "nand", "name": n.name, "size": n.total_size, "voltage": n.voltage,
+                    "source": n.source, "id": bytes(i for i in n.ids if i is not None).hex().upper(),
+                    "detail": n.describe()})
+    for s in spi_nor_chips():
+        out.append({"type": "spinor", "name": s.name, "size": s.total_size, "voltage": s.voltage,
+                    "source": s.source, "id": s.ids.hex().upper(), "detail": s.describe()})
+    for a in spi_nand_chips():
+        out.append({"type": "spinand", "name": a.name, "size": a.total_size, "voltage": a.voltage,
+                    "source": a.source, "id": a.ids.hex().upper(), "detail": a.describe()})
     return out

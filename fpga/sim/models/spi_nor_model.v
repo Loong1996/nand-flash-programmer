@@ -33,7 +33,8 @@ module spi_nor_model #(
     integer    bitcnt, bytecnt, pn, i, k, violations;
     integer    programs, erases;
 
-    assign miso   = cs_n ? 1'bz : (qmode ? qout[1] : miso_r);
+    // DO stays high-Z until the command byte has been received (like real parts)
+    assign miso   = (cs_n || bytecnt == 0) ? 1'bz : (qmode ? qout[1] : miso_r);
     assign mosi   = (!cs_n && qmode) ? qout[0] : 1'bz;
     assign wp_n   = (!cs_n && qmode) ? qout[2] : 1'bz;
     assign hold_n = (!cs_n && qmode) ? qout[3] : 1'bz;

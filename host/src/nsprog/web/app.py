@@ -8,7 +8,6 @@ History and settings are kept in ``~/.nsprog`` (or ``$NSPROG_HOME``).
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 import os
@@ -25,7 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from .. import __version__, chipdb, jobs
 from ..device import Device, connect
-from ..flash import FlashDriver, detect, set_spi_clock
+from ..flash import FlashDriver, ParallelNand, SpiNor, detect, set_spi_clock
 from ..link import find_ft232h_url, list_serial_ports
 
 log = logging.getLogger(__name__)
@@ -86,6 +85,7 @@ class State:
         self.result_meta: dict = {}
         self.badmap: dict = {}          # target -> {"blocks": n, "bad": [...], "new": [...], "time": t}
         self.pins: Optional[dict] = None
+        self.pintest = 0                # PIN_TEST mode currently set on the FPGA
         self.version = 0
         self.settings = dict(DEFAULT_SETTINGS, **_load_json("settings.json", {}))
         self.history = _load_json("history.json", [])
@@ -94,7 +94,7 @@ class State:
         self.version += 1
 
     def snapshot(self) -> dict:
-        info = self.dev.info.__dict__ if self.dev and self.dev.info else None
+        info = self.dev.info.__dict__ if self.dev and self.dev.opened else None
         return {
             "connected": self.dev is not None,
             "port": self.port,
@@ -108,9 +108,11 @@ class State:
             "result": dict(self.result_meta, available=bool(self.result_path)) if self.result_path else None,
             "badmap": self.badmap,
             "pins": self.pins,
+            "pintest": self.pintest,
             "settings": self.settings,
             "history_count": len(self.history),
             "version": __version__,
+            "app_mode": app_mode(),
         }
 
 
@@ -145,7 +147,8 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
     def chips(q: str = "", type: str = "", limit: int = 500):
         ql = q.lower()
         rows = [c for c in chipdb.all_chips()
-                if (not type or c["type"] == type) and (not ql or ql in c["name"].lower() or ql in c["id"].lower())]
+                if (not type or c["type"] == type)
+                and (not ql or ql in c["name"].lower() or ql in c["id"].lower())]
         return {"chips": rows[:limit], "total": len(rows)}
 
     @app.get("/api/settings")
@@ -174,6 +177,11 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         return {"history": []}
 
     # ------------------------------------------------------------ session
+    def _need_dev() -> Device:
+        if st.dev is None:
+            raise HTTPException(400, "not connected")
+        return st.dev
+
     def _busy():
         return st.job is not None and st.job.get("state") == "running"
 
@@ -183,7 +191,7 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(400, str(e)) from e
 
     @app.post("/api/connect")
     async def api_connect(req: Request):
@@ -201,8 +209,10 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 st.nand = st.spi = None
                 st.detect_msgs = []
                 st.pins = None
-                st.dev = connect(port, negotiate=not slow)
-                st.port = port or st.dev.link.name
+                st.pintest = 0
+                dev = connect(port, negotiate=not slow)
+                st.dev = dev
+                st.port = port or dev.link.name
                 st.bump()
         await _in_thread(work)
         return st.snapshot()
@@ -217,6 +227,7 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
             st.dev = None
             st.nand = st.spi = None
             st.pins = None
+            st.pintest = 0
             st.bump()
         return st.snapshot()
 
@@ -232,7 +243,8 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
 
         def work():
             with st.lock:
-                det = detect(st.dev, nand_chip=body.get("nand_chip") or None,
+                _pintest_off(_need_dev())
+                det = detect(_need_dev(), nand_chip=body.get("nand_chip") or None,
                              spi_chip=body.get("spi_chip") or None, use_rb=use_rb, ecc=ecc)
                 st.nand, st.spi, st.detect_msgs = det.nand, det.spi, det.messages
                 st.bump()
@@ -248,12 +260,66 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
 
         def work():
             with st.lock:
-                p = st.dev.pins()
+                p = _need_dev().pins()
                 st.pins = {"rb_ready": p.rb_ready, "spi_do": p.spi_do, "nand_io": p.nand_io,
                            "ft_oe_n": p.ft_oe_n, "ft_siwu_n": p.ft_siwu_n,
                            "ft_clkout_active": p.ft_clkout_active, "port_ft": p.port_ft}
                 st.bump()
                 return st.pins
+        return await _in_thread(work)
+
+    # ------------------------------------------------------------ wiring / doctor
+    def _pintest_off(dev: Device) -> None:
+        """Hand the pins back to normal operation before any other command."""
+        if st.pintest:
+            from .. import doctor
+            doctor.stop(dev)
+            st.pintest = 0
+
+    @app.get("/api/wiring")
+    def api_wiring():
+        from .. import wiring
+        return {"packages": wiring.PACKAGES,
+                "signals": [s.as_dict() for s in wiring.SIGNALS],
+                "idle": wiring.idle_levels()}
+
+    @app.post("/api/pintest")
+    async def api_pintest(req: Request):
+        """{pin, mode}: 0 off, 1 release all (live levels), 2 low, 3 high, 4 toggle."""
+        from .. import doctor
+        body = await req.json()
+        mode = int(body.get("mode", 0))
+        pin = int(body.get("pin", 0))
+        if _busy():
+            raise HTTPException(409, "a job is running")
+
+        def work():
+            with st.lock:
+                dev = _need_dev()
+                if not doctor.supports_pin_test(dev):
+                    raise HTTPException(400, "gateware %s has no pin test; update it with "
+                                             "'nsprog fpga-flash'" % dev.info.gw_version)
+                lv = doctor.pin_test(dev, pin, mode)
+                if st.pintest != mode:
+                    st.pintest = mode
+                    st.bump()
+                return {"levels": lv, "mode": mode, "pin": pin}
+        return await _in_thread(work)
+
+    @app.post("/api/doctor")
+    async def api_doctor(req: Request):
+        from .. import doctor
+        body = await req.json()
+        if _busy():
+            raise HTTPException(409, "a job is running")
+
+        def work():
+            with st.lock:
+                dev = _need_dev()
+                st.pintest = 0
+                checks = doctor.run(dev, drive=bool(body.get("drive", True)))
+                st.bump()
+                return {"checks": [c.as_dict() for c in checks], "summary": doctor.summary(checks)}
         return await _in_thread(work)
 
     @app.post("/api/selftest")
@@ -276,7 +342,7 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                     vals = [rng.randrange(256) for _ in range(500)]
                     rs = [b.echo(v) for v in vals]
                     x = b.spi_xfer(bytes(rng.randrange(256) for _ in range(4000)))
-                    st.dev.run(b)
+                    _need_dev().run(b)
                     if [r.value for r in rs] != vals:
                         raise RuntimeError("echo mismatch: link unreliable")
                     total += 1000 + 8000 + len(x.value)
@@ -307,17 +373,20 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         if _busy():
             raise HTTPException(409, "a job is running")
         st.cancel.clear()
-        st.job = {"op": op, "target": target, "chip": chip_name, "state": "running", "phase": "",
-                  "done": 0, "total": 0, "messages": [], "report": None, "started": time.time(),
-                  "download": None}
+        if st.dev is not None and target != "file":
+            _pintest_off(st.dev)
+        job: dict = {"op": op, "target": target, "chip": chip_name, "state": "running", "phase": "",
+                     "done": 0, "total": 0, "messages": [], "report": None, "started": time.time(),
+                     "download": None}
+        st.job = job
         st.bump()
 
         def progress(phase, done, total):
-            st.job.update(phase=phase, done=done, total=total)
+            job.update(phase=phase, done=done, total=total)
             st.bump()
 
         def message(text):
-            st.job["messages"].append(text)
+            job["messages"].append(text)
             st.bump()
 
         ctx = jobs.Context(progress=progress, cancel=st.cancel, message=message)
@@ -330,7 +399,7 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 with st.lock:
                     rep = fn(ctx)
                 rep_dict = rep.as_dict()
-                st.job["report"] = rep_dict
+                job["report"] = rep_dict
                 if on_done:
                     on_done(rep)
                 if result_file and rep.ok:
@@ -338,18 +407,18 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                     st.result_name = result_name
                     st.result_meta = dict(result_meta or {}, name=result_name,
                                           size=os.path.getsize(result_file))
-                    st.job["download"] = "/api/result"
+                    job["download"] = "/api/result"
                 final = "done" if rep.ok else "failed"
             except jobs.Cancelled:
                 final = "cancelled"
             except Exception as e:
                 log.debug("job failed", exc_info=True)
-                st.job["messages"].append("error: %s" % e)
-                st.job["trace"] = traceback.format_exc()
+                job["messages"].append("error: %s" % e)
+                job["trace"] = traceback.format_exc()
                 final = "failed"
-            st.job["finished"] = time.time()
+            job["finished"] = time.time()
             _record(op, target, chip_name, rep_dict, final)
-            st.job["state"] = final
+            job["state"] = final
             st.bump()
         threading.Thread(target=run, daemon=True).start()
         return st.snapshot()
@@ -367,10 +436,10 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         target = _q(req, "target", "nand")
         drv = _driver(target)
         if drv.kind != "nand":
-            set_spi_clock(st.dev, _q(req, "spi_mhz", st.settings.get("spi_mhz", 6.75), float))
-        if drv.kind == "nand":
+            set_spi_clock(_need_dev(), _q(req, "spi_mhz", st.settings.get("spi_mhz", 6.75), float))
+        if isinstance(drv, ParallelNand):
             drv.set_timing(_q(req, "nand_timing", st.settings.get("nand_timing", "safe")))
-        if drv.kind == "spinor":
+        if isinstance(drv, SpiNor):
             drv.quad = _q(req, "spi_quad", st.settings.get("spi_quad", "auto"))
         start = _q(req, "start", 0, int)
         count = _q(req, "count", None, int)
@@ -484,7 +553,10 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
     def result_find(q: str, start: int = 0, hex: bool = False):
         if not st.result_path:
             raise HTTPException(404, "no result")
-        needle = bytes.fromhex(q.replace(" ", "")) if hex else q.encode("utf-8")
+        try:
+            needle = bytes.fromhex(q.replace(" ", "")) if hex else q.encode("utf-8")
+        except ValueError:
+            raise HTTPException(400, "not a hex string: %r" % q) from None
         if not needle:
             raise HTTPException(400, "empty search")
         with open(st.result_path, "rb") as f:
@@ -551,12 +623,12 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                     out = _tmp() if tool == "ecc_fix" else None
                     strip = _bool(_q(req, "strip", "0"))
                     with open(src, "rb") as f:
-                        o = open(out, "wb") if out else None
+                        fixed = open(out, "wb") if out else None
                         try:
-                            rep = image.ecc_check(f, geo, lay, o, strip=strip)
+                            rep = image.ecc_check(f, geo, lay, fixed, strip=strip)
                         finally:
-                            if o:
-                                o.close()
+                            if fixed:
+                                fixed.close()
                     if out:
                         set_result(out, base + ("-fixed-main.bin" if strip else "-fixed.bin"))
                     return ToolReport("ECC " + ("fix" if out else "check"), rep.ok,
@@ -587,9 +659,22 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
             st.result_meta = {"name": name, "size": os.path.getsize(path), "page": page,
                               "oob": 0 if name.endswith(("-main.bin", "-fixed-main.bin")) else oob,
                               "ppb": ppb, "target": "file", "chip": fname}
-            st.job["download"] = "/api/result"
+            if st.job is not None:
+                st.job["download"] = "/api/result"
 
         return _start("tool:" + tool, "file", fn, chip_name=fname)
+
+    @app.post("/api/quit")
+    def api_quit():
+        """Stop the server (only in desktop-app mode, where there is no terminal)."""
+        if not app_mode():
+            raise HTTPException(403, "only available in the desktop app")
+        if _busy():
+            raise HTTPException(409, "a job is running")
+        if st.dev:
+            st.dev.close()
+        threading.Timer(0.3, lambda: os._exit(0)).start()
+        return {"ok": True}
 
     # ------------------------------------------------------------ websocket
     @app.websocket("/ws")
@@ -606,6 +691,25 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
             pass
 
     return app
+
+
+def app_mode() -> bool:
+    """Started as a desktop app (no terminal to press Ctrl+C in)."""
+    return os.environ.get("NSPROG_APP") == "1"
+
+
+def running_instance(port: int) -> Optional[str]:
+    """URL of an nsprog web UI already listening on ``port``, else None."""
+    import urllib.request
+
+    url = "http://127.0.0.1:%d/" % port
+    try:
+        with urllib.request.urlopen(url + "api/state", timeout=0.5) as r:
+            if "version" in json.loads(r.read().decode("utf-8")):
+                return url
+    except Exception:
+        pass
+    return None
 
 
 def serve(host="127.0.0.1", port=8765, open_browser=True, default_port=None) -> None:

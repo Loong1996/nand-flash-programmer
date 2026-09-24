@@ -44,6 +44,7 @@ USB ─ FT232H ─ FIFO ─┘   (回复走最近    ◄── TX FIFO 4 KiB ◄
 - **突发传输**：总线模块用请求/应答握手，引擎在上一个周期的最后一个时钟就交出下一个请求，所以连续读写没有空闲时钟：NAND `fast` 档每字节 2 个时钟（13.5 MB/s），SPI 四线读每字节 4 个时钟（6.75 MB/s）。
 - **同步 FIFO 自动切换**：FPGA 看到 CLKOUT 在翻转（上位机用 `--port ft232h-sync` 打开 FT232H 时才有）就把 FT232H 数据线交给 60 MHz 时钟域的同步桥，并开始驱动 OE#；CLKOUT 停止约 2.4 ms 后自动回到异步桥。两个时钟域之间用双时钟 FIFO（格雷码指针）；CLKOUT 停下时 60 MHz 一侧会冻结，所以 27 MHz 一侧要等 CLKOUT 稳定 64 个周期后才开始收发。
 - **1.8V bank**：Tang Nano 9K 的 bank 3（79–86 脚，和 LED、按键同组）是 1.8V，所有 Flash 和 FT232H 信号都放在 3.3V 的 bank 1/2 上。CLKOUT 放在 36 脚而不是 35 脚（GCLKT_4），因为开源工具链无法把 35 脚连到全局时钟网络。
+- **引脚测试（PIN_TEST，固件 1.2）**：21 根 NAND/SPI 信号线都接成双向 IO，平时由总线模块驱动；测试模式下改由引擎统一控制（全部释放 / 单根拉低 / 拉高 / 2 Hz 翻转），10 µs 后读回全部 21 根线的焊盘电平。`nsprog doctor` 靠它查短路和空闲电平，`nsprog pintest` 和网页“接线”页的“闪烁”按钮靠它逐根查线。任何一条普通命令都会先退出测试模式，所以不会和读写冲突。
 - **双用途引脚**：FT232H 数据线用到的 53–57 脚是配置接口复用脚，打包时用 `--sspi_as_gpio --mspi_as_gpio --cpu_as_gpio` 把它们释放为普通 IO（与 LiteX 对该板的默认做法相同）。
 
 ## 4. 速度估算
@@ -75,6 +76,18 @@ python fpga/build.py --install      # 综合 + 布局布线 + 打包，并复制
 sudo apt install iverilog && pip install cocotb                     # 仿真依赖
 python fpga/sim/run_sim.py          # RTL 端到端测试（SPI NOR 与 SPI NAND 两种配置）
 ```
+
+```bash
+pip install yowasp-yosys            # 或系统自带的 yosys
+python fpga/sim/run_sim.py gate     # 门级仿真：yosys 综合后的网表 + 高云单元模型
+```
+
+门级仿真用和 `build.py` 相同的 `synth_gowin` 流程综合出网表，再跑一组覆盖所有模块的端到端测试（UART、异步/同步 FIFO、并口 NAND、SPI 四线、引脚测试），用来发现“RTL 仿真对、综合后不对”的问题（例如三态没变成 IOBUF、初始值丢失）。两点说明：
+
+- yosys 自带的 `gowin/cells_sim.v` 里 IOBUF 模型有错（写成了 `assign I = IO;`，输出 O 永远是 Z），`run_sim.py` 会复制一份并改正后再用。
+- 块 RAM（DPB / DPX9B）没有可用的开源仿真模型，`fpga/sim/gowin_bram_sim.v` 是按高云文档写的行为模型，只覆盖本设计用到的模式。
+
+门级仿真比 RTL 慢约 10 倍（6 个测试约 1 小时，CI 里只跑其中较快的几个）。
 
 仿真里的 Verilog 芯片模型会检查 WE# 脉宽、数据建立时间、tWHR、tADL、忙时访问、CS# 中途拉高等违例，测试断言违例数为 0。
 

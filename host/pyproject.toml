@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nsprog"
-version = "0.2.0"
+version = "0.3.0"
 description = "Host software for the nsprog FPGA NAND / SPI flash programmer"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -31,3 +31,16 @@ nsprog = ["data/*.csv", "web/static/*", "bitstream/*.fs"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B"]
+
+[tool.mypy]
+python_version = "3.9"
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_unused_ignores = true

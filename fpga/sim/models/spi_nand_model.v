@@ -34,7 +34,8 @@ module spi_nand_model #(
     reg        miso_r;
     integer    bitcnt, bytecnt, i, violations, dcol;
 
-    assign miso = cs_n ? 1'bz : miso_r;
+    // DO stays high-Z until the command byte has been received (like real parts)
+    assign miso = (cs_n || bytecnt == 0) ? 1'bz : miso_r;
 
     initial begin
         busy = 0; prot = 8'h7C; cfg = 8'h18; st = 8'h00; violations = 0; miso_r = 1'b1;

@@ -9,7 +9,7 @@ module engine #(
     parameter [15:0] BAUD_DIV_DEFAULT = 16'd234,
     parameter [7:0]  RX_AW            = 8'd12,
     parameter [7:0]  GW_MAJOR         = 8'd1,
-    parameter [7:0]  GW_MINOR         = 8'd1,
+    parameter [7:0]  GW_MINOR         = 8'd2,
     parameter [7:0]  BOARD_ID         = 8'd1
 ) (
     input  wire        clk,
@@ -50,6 +50,11 @@ module engine #(
     input  wire        active_port,    // 0 = UART, 1 = FT245
     input  wire [2:0]  ft_status,      // {CLKOUT active, SIWU# level, OE# level}
     input  wire        rx_overflow,    // pulse
+    // pin test (wiring diagnostics)
+    output reg  [2:0]  test_mode,      // 0 off, 1 release all, 2 low, 3 high, 4 toggle 2 Hz
+    output reg  [4:0]  test_sel,       // pin index driven in modes 2-4
+    output wire        test_val,       // level for the selected pin
+    input  wire [20:0] test_lv,        // synchronized pad levels of all test pins
     output wire        nand_activity,
     output wire        spi_activity,
     output wire        err_led
@@ -58,7 +63,7 @@ module engine #(
     // Opcodes
     localparam OP_NOP         = 8'h00, OP_ECHO       = 8'h01, OP_INFO      = 8'h02,
                OP_SET_REG     = 8'h03, OP_DELAY_US   = 8'h04, OP_SET_BAUD  = 8'h05,
-               OP_GET_PINS    = 8'h06,
+               OP_GET_PINS    = 8'h06, OP_PIN_TEST  = 8'h07,
                OP_NAND_CE     = 8'h10, OP_NAND_CMD   = 8'h11, OP_NAND_ADDR = 8'h12,
                OP_NAND_WRITE  = 8'h13, OP_NAND_READ  = 8'h14, OP_NAND_WAIT = 8'h15,
                OP_NAND_POLL   = 8'h16,
@@ -156,7 +161,8 @@ module engine #(
         S_RES1     = 6'd24, S_CS_ON    = 6'd25, S_SW       = 6'd26, S_SW2      = 6'd27,
         S_SR       = 6'd28, S_SR2      = 6'd29, S_SX       = 6'd30, S_SX2      = 6'd31,
         S_SX3      = 6'd32, S_SP_CS    = 6'd33, S_SP_CMD   = 6'd34, S_SP_RD    = 6'd35,
-        S_SP_CHK   = 6'd36, S_DONE     = 6'd37, S_INFO2    = 6'd38;
+        S_SP_CHK   = 6'd36, S_DONE     = 6'd37, S_INFO2    = 6'd38, S_PT       = 6'd39,
+        S_PT2      = 6'd40;
 
     reg [5:0]  st, ret;
     reg [7:0]  op;
@@ -201,7 +207,7 @@ module engine #(
                 4'd10: info_byte = CLK_HZ[23:16];
                 4'd11: info_byte = CLK_HZ[31:24];
                 4'd12: info_byte = RX_AW;
-                4'd13: info_byte = 8'h7B;          // caps: NAND8|SPI|FT245|UART|QSPI|SYNC245
+                4'd13: info_byte = 8'hFB;          // caps: NAND8|SPI|FT245|UART|QSPI|SYNC245|PIN_TEST
                 4'd14: info_byte = flags;
                 default: info_byte = {7'd0, active_port};
             endcase
@@ -218,6 +224,7 @@ module engine #(
                 OP_DELAY_US:   fixed_args = 4'd2;
                 OP_SET_BAUD:   fixed_args = 4'd2;
                 OP_NAND_CE:    fixed_args = 4'd1;
+                OP_PIN_TEST:   fixed_args = 4'd2;
                 OP_NAND_CMD:   fixed_args = 4'd1;
                 OP_NAND_ADDR:  fixed_args = 4'd1;
                 OP_NAND_WRITE: fixed_args = 4'd2;
@@ -240,6 +247,7 @@ module engine #(
         begin
             case (o)
                 OP_NOP, OP_ECHO, OP_INFO, OP_SET_REG, OP_DELAY_US, OP_SET_BAUD, OP_GET_PINS,
+                OP_PIN_TEST,
                 OP_NAND_CE, OP_NAND_CMD, OP_NAND_ADDR, OP_NAND_WRITE, OP_NAND_READ,
                 OP_NAND_WAIT, OP_NAND_POLL,
                 OP_SPI_CS, OP_SPI_WRITE, OP_SPI_READ, OP_SPI_XFER, OP_SPI_POLL, OP_SPI_READ4:
@@ -249,6 +257,25 @@ module engine #(
             endcase
         end
     endfunction
+
+    // Pin test: 2 Hz square wave for mode 4 (250 ms per half period).
+    reg [7:0] tog_ms;
+    reg       tog;
+    always @(posedge clk) begin
+        if (rst) begin
+            tog_ms <= 8'd0;
+            tog    <= 1'b0;
+        end else if (tick_ms) begin
+            if (tog_ms == 8'd249) begin
+                tog_ms <= 8'd0;
+                tog    <= ~tog;
+            end else begin
+                tog_ms <= tog_ms + 1'b1;
+            end
+        end
+    end
+    assign test_val = (test_mode == 3'd3) | ((test_mode == 3'd4) & tog);
+    reg [23:0] pt_lv;
 
     wire waiting_input = (st == S_ARGS) || (st == S_GETB) ||
                          ((st == S_NW || st == S_SW || st == S_SX) && len != 0);
@@ -281,6 +308,8 @@ module engine #(
             nand_ce_act  <= 1'b0;
             spi_cs_act   <= 1'b0;
             spi_qin      <= 1'b0;
+            test_mode    <= 3'd0;
+            test_sel     <= 5'd0;
             nb_req       <= 1'b0;
             sp_req       <= 1'b0;
             sp_quad      <= 1'b0;
@@ -410,6 +439,12 @@ module engine #(
                             ret     <= S_PINS2;
                             st      <= S_PUSH;
                         end
+                        OP_PIN_TEST: begin
+                            test_sel  <= args[0][4:0];
+                            test_mode <= (args[1] > 8'd4) ? 3'd0 : args[1][2:0];
+                            len       <= 16'd270;          // settle 10 us before sampling
+                            st        <= S_PT;
+                        end
                         OP_NAND_CE: begin
                             nand_ce_act <= args[0][0];
                             st          <= S_DONE;
@@ -537,6 +572,26 @@ module engine #(
                         baud_pending <= 1'b1;
                         wd_ms        <= 16'd0;
                         st           <= S_FETCH;
+                    end
+                end
+                S_PT: begin
+                    if (len == 0) begin
+                        pt_lv   <= {3'd0, test_lv};
+                        idx     <= 4'd0;
+                        st      <= S_PT2;
+                    end else begin
+                        len <= len - 1'b1;
+                    end
+                end
+                S_PT2: begin
+                    if (idx == 4'd3) begin
+                        st <= S_DONE;
+                    end else begin
+                        tx_data <= pt_lv[7:0];
+                        pt_lv   <= {8'd0, pt_lv[23:8]};
+                        idx     <= idx + 1'b1;
+                        ret     <= S_PT2;
+                        st      <= S_PUSH;
                     end
                 end
                 S_PINS2: begin

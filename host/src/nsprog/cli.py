@@ -13,7 +13,7 @@ from typing import Optional
 
 from . import __version__, chipdb, jobs
 from .device import connect
-from .flash import FlashDriver, FlashError, detect, set_spi_clock
+from .flash import FlashDriver, FlashError, ParallelNand, SpiNor, detect, set_spi_clock
 
 log = logging.getLogger("nsprog")
 
@@ -89,10 +89,10 @@ def _target(args, dev) -> FlashDriver:
     if drv.kind != "nand":
         mhz = set_spi_clock(dev, args.spi_mhz)
         log.info("SPI clock %.2f MHz", mhz)
-    if drv.kind == "nand":
+    if isinstance(drv, ParallelNand):
         prof = drv.set_timing(args.nand_timing)
         log.info("NAND bus timing: %s", prof)
-    if drv.kind == "spinor":
+    if isinstance(drv, SpiNor):
         drv.quad = args.spi_quad
     print(drv.describe(), file=sys.stderr)
     return drv
@@ -155,6 +155,86 @@ def cmd_pins(args):
     print("FT232H OE#/SIWU#: %s / %s (both should be high)" % (
         "high" if p.ft_oe_n else "LOW", "high" if p.ft_siwu_n else "LOW"))
     dev.close()
+    return 0
+
+
+_MARK = {"ok": "✓", "warn": "!", "fail": "✗", "skip": "-", "info": "·"}
+
+
+def cmd_doctor(args):
+    """Check link, firmware, wiring (shorts) and chips in one go."""
+    from . import doctor
+
+    dev = _open(args)
+    try:
+        if args.probe:
+            return _probe(dev)
+        checks = doctor.run(dev, drive=not args.no_drive,
+                            progress=lambda s: print("… %s" % s, file=sys.stderr))
+        for c in checks:
+            print("%s %s：%s" % (_MARK.get(c.status, "?"), c.title, c.detail.split("\n")[0]))
+            for line in c.detail.split("\n")[1:]:
+                print("    " + line)
+            if c.hint and c.status in ("warn", "fail", "info"):
+                print("    → " + c.hint)
+        print("结论：%s" % doctor.summary(checks))
+        print("（断线只能从座子一侧查：nsprog doctor --probe，用接 GND/3V3 的杜邦线逐个碰座子引脚）",
+              file=sys.stderr)
+        return 1 if any(c.status == "fail" for c in checks) else 0
+    finally:
+        dev.close()
+
+
+def _probe(dev):
+    from . import doctor, wiring
+
+    if not doctor.supports_pin_test(dev):
+        raise SystemExit("gateware %s has no pin test; run 'nsprog fpga-flash'" % dev.info.gw_version)
+    print("探针模式：所有 Flash 引脚已释放。用一根杜邦线，一端接 GND（上拉的线）或 3V3（下拉的线），")
+    print("另一端逐个碰座子引脚，这里会显示是哪根线在变化。Ctrl+C 结束。")
+    for s in wiring.TEST_SIGNALS:
+        print("  %-10s FPGA %-3s 空闲=%s  → 用 %s 去碰" % (
+            s.name, s.fpga, "高" if s.pull == "up" else "低", "GND" if s.pull == "up" else "3V3"))
+    try:
+        for i, lv in doctor.probe(dev):
+            print("%s  %s → %s" % (time.strftime("%H:%M:%S"), wiring.describe(wiring.by_test_index(i)),
+                                  "高" if lv else "低"), flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        doctor.stop(dev)
+    return 0
+
+
+def cmd_pintest(args):
+    """Drive a single flash-side pin (multimeter / LED check at the socket)."""
+    from . import doctor, wiring
+    from . import protocol as P
+
+    if args.list:
+        for s in wiring.TEST_SIGNALS:
+            print("%-2d %-10s FPGA %-3s %-5s %s" % (s.bit, s.name, s.fpga, s.group,
+                                                  "  ".join("%s:%s" % kv for kv in s.pins.items())))
+        return 0
+    if not args.pin:
+        raise SystemExit("give --pin NAME (see --list) or --list")
+    sig = wiring.find(args.pin)
+    mode = {"low": P.PT_LOW, "high": P.PT_HIGH, "toggle": P.PT_TOGGLE}[args.mode]
+    dev = _open(args)
+    try:
+        if not doctor.supports_pin_test(dev):
+            raise SystemExit("gateware %s has no pin test; run 'nsprog fpga-flash'" % dev.info.gw_version)
+        lv = doctor.pin_test(dev, sig.bit, mode)
+        print("%s: %s（其余引脚已释放）。读回 %s。Ctrl+C 或 %d 秒后恢复。" % (
+            wiring.describe(sig), {"low": "拉低", "high": "拉高", "toggle": "每秒翻转 2 次"}[args.mode],
+            "高" if lv >> sig.bit & 1 else "低", args.seconds))
+        try:
+            time.sleep(args.seconds)
+        except KeyboardInterrupt:
+            pass
+    finally:
+        doctor.stop(dev)
+        dev.close()
     return 0
 
 
@@ -249,8 +329,15 @@ def cmd_badblocks(args):
 
 
 def cmd_web(args):
-    from .web.app import serve
+    from .web.app import running_instance, serve
 
+    url = running_instance(args.web_port)
+    if url:                                   # already running (e.g. the app was opened twice)
+        print("nsprog web UI is already running: %s" % url)
+        if not args.no_browser:
+            import webbrowser
+            webbrowser.open(url)
+        return 0
     serve(host=args.host, port=args.web_port, open_browser=not args.no_browser,
           default_port=args.port)
     return 0
@@ -327,12 +414,12 @@ def cmd_image(args):
     if args.action == "merge":
         lay = _ecc_layout(args) if args.ecc else None
         with open(args.src, "rb") as m, open(args.dst, "wb") as out:
-            o = open(args.oob_file, "rb") if args.oob_file else None
+            oob_in = open(args.oob_file, "rb") if args.oob_file else None
             try:
-                n = image.merge(m, o, out, geo, lay)
+                n = image.merge(m, oob_in, out, geo, lay)
             finally:
-                if o:
-                    o.close()
+                if oob_in:
+                    oob_in.close()
         print("built %d raw pages%s -> %s" % (n, (" with %s ECC" % lay.describe()) if lay else "",
                                                 args.dst))
         return 0
@@ -410,7 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
     def chip_opts(sp, file_arg=None, bb_default=None):
         if file_arg:
             sp.add_argument("file", help=file_arg)
-        sp.add_argument("-t", "--target", choices=["nand", "spi"], help="bus to use (auto if only one chip found)")
+        sp.add_argument("-t", "--target", choices=["nand", "spi"],
+                        help="bus to use (auto if only one chip found)")
         sp.add_argument("-c", "--chip", help="force a chip database entry (see 'nsprog chips')")
         sp.add_argument("--start-block", type=int, default=0, help="first erase block")
         sp.add_argument("--blocks", type=int, help="number of blocks (default: to the end / image size)")
@@ -426,7 +514,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "on = set QE for the read and restore it (default auto)")
         sp.add_argument("--nand-timing", choices=["safe", "medium", "fast", "auto"], default="safe",
                         help="parallel NAND bus timing; faster needs short wires (default safe)")
-        sp.add_argument("--allow-1v8", action="store_true", help="allow 1.8V parts (only with a level shifter)")
+        sp.add_argument("--allow-1v8", action="store_true",
+                        help="allow 1.8V parts (only with a level shifter)")
         sp.add_argument("-y", "--yes", action="store_true", help="confirm dangerous options")
 
     sp = sub.add_parser("info", help="show programmer and detected chips")
@@ -436,6 +525,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("pins", help="wiring diagnostics (R/B#, NAND data bus levels)")
     sp.set_defaults(func=cmd_pins)
+
+    sp = sub.add_parser("doctor", help="check link, firmware, wiring shorts and chips in one go")
+    sp.add_argument("--no-drive", action="store_true",
+                    help="only read levels; do not drive any pin (no short test)")
+    sp.add_argument("--probe", action="store_true",
+                    help="interactive: touch socket pins with a GND/3V3 lead, see which line reacts")
+    sp.set_defaults(func=cmd_doctor)
+
+    sp = sub.add_parser("pintest", help="drive one flash-side pin to check it at the socket")
+    sp.add_argument("--list", action="store_true", help="list the testable pins")
+    sp.add_argument("--pin", help="pin name, e.g. CE#, IO3, spi:io0, fpga74")
+    sp.add_argument("--mode", choices=["toggle", "low", "high"], default="toggle")
+    sp.add_argument("--seconds", type=float, default=30.0, help="how long to hold (default 30)")
+    sp.set_defaults(func=cmd_pintest)
 
     sp = sub.add_parser("chips", help="list the chip database")
     sp.add_argument("search", nargs="?")
@@ -502,7 +605,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     def ecc_opts(sp, required=True):
         sp.add_argument("--ecc", required=required,
-                        help="hamming256 | hamming512 | bch4 | bch8 | bch16 | bch:<t>:<step> | hamming:<step>")
+                        help="hamming256 | hamming512 | bch4 | bch8 | bch16 | "
+                             "bch:<t>:<step> | hamming:<step>")
         sp.add_argument("--ecc-offset", type=int,
                         help="ECC start inside the OOB (default: packed at the end, Linux layout)")
 
