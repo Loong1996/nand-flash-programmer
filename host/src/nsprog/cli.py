@@ -206,6 +206,36 @@ def _probe(dev):
     return 0
 
 
+def cmd_troubleshoot(args):
+    """Guided troubleshooting: list the symptoms, or run one symptom's checks."""
+    from . import troubleshoot as T
+
+    if not args.symptom:
+        print("选择一个现象：nsprog troubleshoot <编号>")
+        for sy in T.SYMPTOMS:
+            print("  %-14s %s（%s）" % (sy.id, sy.title, sy.summary))
+        return 0
+    sy = T.symptom(args.symptom)
+    dev = None
+    try:
+        dev = _open(args)
+    except Exception as e:
+        if sy.needs_device:
+            print("无法连接编程器：%s" % e)
+    print("== %s ==" % sy.title)
+    findings = T.diagnose(sy.id, dev)
+    for f in findings:
+        print("%s %s：%s" % (_MARK.get(f.status, "·"), f.title, f.detail))
+        if f.fix and f.status != "ok":
+            print("    → %s" % f.fix)
+    print("\n还要逐项确认：")
+    for i, step in enumerate(sy.steps, 1):
+        print("  %d. %s" % (i, step))
+    if dev is not None:
+        dev.close()
+    return 1 if T.verdict(findings) == "fail" else 0
+
+
 def cmd_pintest(args):
     """Drive a single flash-side pin (multimeter / LED check at the socket)."""
     from . import doctor, wiring
@@ -572,6 +602,21 @@ def cmd_selftest(args):
         total += 2000 + 8000 + len(x.value)
     dt = time.monotonic() - t0
     print("link OK: %d rounds, %s in %.2f s (%s/s)" % (args.rounds, _size(total), dt, _size(total / dt)))
+    if args.fuzz:
+        from . import fuzz
+
+        for i in range(args.fuzz):
+            dev.link.write(fuzz.stream(rng, ops=40, safe=True))
+            dev.resync()
+            flags = dev.info.flags
+            fuzz.restore(dev)
+            b = P.Batch()
+            rs = [b.echo(v) for v in range(64)]
+            dev.run(b)
+            if [r.value for r in rs] != list(range(64)):
+                raise SystemExit("fuzz round %d: link did not recover" % (i + 1))
+            print("fuzz round %d/%d: resynced (engine flags %02x)" % (i + 1, args.fuzz, flags))
+        print("protocol fuzz OK: the engine recovered from %d garbage streams" % args.fuzz)
     dev.close()
     return 0
 
@@ -771,6 +816,10 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--peb", type=int)
     x.set_defaults(func=cmd_ubi)
 
+    sp = sub.add_parser("troubleshoot", help="guided troubleshooting (symptom -> checks -> fixes)")
+    sp.add_argument("symptom", nargs="?", help="symptom id (run without one to list them)")
+    sp.set_defaults(func=cmd_troubleshoot)
+
     sp = sub.add_parser("fs", help="list / extract SquashFS, JFFS2, UBIFS (also inside UBI) from an image")
     fsub = sp.add_subparsers(dest="action", required=True)
     for name, hlp in (("list", "list the files of every file system found"),
@@ -786,6 +835,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("selftest", help="link stress test")
     sp.add_argument("--rounds", type=int, default=20)
+    sp.add_argument("--fuzz", type=int, default=0, metavar="N",
+                    help="then send N random / truncated command streams and check that the engine "
+                         "resyncs (never asserts CE#/CS#, safe with chips in the sockets)")
     sp.set_defaults(func=cmd_selftest)
     return p
 

@@ -69,6 +69,9 @@ PIN_NAND_PARK = 1 << 3
 PIN_SPI_PARK = 1 << 4
 PIN_SPI_SAMPLE_LATE = 1 << 5
 PIN_CTRL_DEFAULT = PIN_SPI_IO2_HIGH | PIN_SPI_IO3_HIGH
+#: register values after reset (docs/protocol.md section 3)
+REG_DEFAULTS = {REG_T_SETUP: 2, REG_T_WP: 3, REG_T_WH: 2, REG_T_RP: 3, REG_T_REH: 2, REG_T_WHR: 6,
+                REG_T_ADL: 8, REG_T_WB: 6, REG_SPI_DIV: 3, REG_PIN_CTRL: PIN_CTRL_DEFAULT}
 
 INFO_MAGIC = b"NSPG"
 INFO_LEN = 16

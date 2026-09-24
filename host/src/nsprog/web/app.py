@@ -342,6 +342,30 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 return {"checks": [c.as_dict() for c in checks], "summary": doctor.summary(checks)}
         return await _in_thread(work)
 
+    @app.get("/api/troubleshoot")
+    def api_troubleshoot_list():
+        from .. import troubleshoot as T
+        return {"symptoms": [x.as_dict() for x in T.SYMPTOMS]}
+
+    @app.post("/api/troubleshoot")
+    async def api_troubleshoot(req: Request):
+        from .. import troubleshoot as T
+        body = await req.json()
+        try:
+            T.symptom(str(body.get("symptom", "")))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        if _busy():
+            raise HTTPException(409, "a job is running")
+
+        def work():
+            with st.lock:
+                st.pintest = 0
+                findings = T.diagnose(body["symptom"], st.dev)
+                st.bump()
+                return T.as_dict(body["symptom"], findings)
+        return await _in_thread(work)
+
     @app.post("/api/selftest")
     async def api_selftest():
         if not st.dev:

@@ -7,6 +7,7 @@ Used by the test-suite and for trying the CLI / web UI without hardware
 from __future__ import annotations
 
 import struct
+import time
 from typing import Dict, Optional, Union
 
 from . import protocol as P
@@ -493,6 +494,7 @@ class Engine:
         self.cs = False
         self.pin_ctrl = P.PIN_CTRL_DEFAULT
         self.flags = 0
+        self.last_rx = 0.0              # wall-clock time of the last received byte
         self.regs: Dict[int, int] = {}
         # pin test: mode, selected pin, and injectable wiring faults
         self.pt_mode = 0
@@ -500,6 +502,7 @@ class Engine:
         self.shorts: list = []          # [(test_bit_a, test_bit_b), ...]
         self.stuck: dict = {}           # {test_bit: level}  (short to GND / 3V3)
         self.probe: dict = {}           # {test_bit: level}  (weak: a finger on the pin)
+        self.wp_open = False            # NAND WP# wire missing: the chip stays write protected
 
     def pin_levels(self) -> int:
         """Pad levels of the 21 test pins in the current pin-test mode."""
@@ -571,7 +574,17 @@ class Engine:
         self.cs = on
 
     # -- parser
+    #: like the FPGA: a partly received operation is dropped after 100 ms without bytes
+    ABORT_S = 0.1
+
+    def idle(self) -> None:
+        if self.inbuf and time.monotonic() - self.last_rx > self.ABORT_S:
+            self.inbuf.clear()
+            self.flags |= 2
+
     def feed(self, data: bytes) -> None:
+        self.idle()
+        self.last_rx = time.monotonic()
         self.inbuf += data
         while self._step():
             pass
@@ -625,7 +638,7 @@ class Engine:
             if f[1] == P.REG_PIN_CTRL:
                 self.pin_ctrl = f[2]
                 if self.nand is not None:
-                    self.nand.wp_high = bool(self.pin_ctrl & P.PIN_NAND_WP_HIGH)
+                    self.nand.wp_high = bool(self.pin_ctrl & P.PIN_NAND_WP_HIGH) and not self.wp_open
         elif op == P.DELAY_US:
             self._tick(u16(1))
         elif op == P.SET_BAUD:
@@ -752,6 +765,11 @@ class EmulatorLink(Link):
         self.engine.feed(bytes(data))
 
     def read(self, n: int, timeout: float) -> bytes:
+        self.engine.idle()
+        if not self.engine.out and self.engine.inbuf and timeout > 0:
+            # a partial operation is pending: behave like a real link and let time pass
+            time.sleep(min(timeout, self.engine.ABORT_S + 0.01))
+            self.engine.idle()
         out = self.engine.out
         got = bytes(out[:n])
         del out[:n]

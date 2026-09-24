@@ -186,6 +186,7 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
 .li.tap:hover { background: var(--fill2); }
 .li.tap:first-child { border-radius: 24px 24px 0 0; } .li.tap:last-child { border-radius: 0 0 24px 24px; }
 .li.tap:only-child { border-radius: 24px; }
+.menu .li.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .chev { width: 14px; height: 14px; color: var(--label3); stroke-width: 2.4; }
 
 .field { border: 0; background: transparent; outline: none; text-align: right; width: 140px; color: var(--label2); padding: 6px 0; }
@@ -698,12 +699,23 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
 
     <div>
       <div class="sec-h">引脚诊断 <button class="btn sm" id="btnPins" style="margin-left:auto"><svg class="ic"><use href="#i-pulse"/></svg>读取引脚</button>
-        <a class="btn sm" href="#/wiring" id="btnDoctorGo"><svg class="ic"><use href="#i-stetho"/></svg>接线自检</a></div>
+        <a class="btn sm" href="#/wiring" id="btnDoctorGo"><svg class="ic"><use href="#i-stetho"/></svg>接线自检</a>
+        <a class="btn sm" href="#/help"><svg class="ic"><use href="#i-warn"/></svg>排障</a></div>
       <div class="glass card">
         <div class="pins" id="pins"><div class="muted">连接后读取引脚电平，用来检查杜邦线接线。</div></div>
         <div class="sec-f" style="margin:12px 0 0">不插芯片时：数据线 IO0–7 应全亮（上拉为 1），R/B# 就绪。某一位不亮多半是那根线松了或接错了。</div>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ================================================================ 排障 -->
+<section class="page" id="page-help">
+  <div class="ph"><div><div class="eyebrow">选现象 → 自动检查 → 按提示修</div><h1>排障</h1></div></div>
+  <div class="grid g2">
+    <div><div class="sec-h">遇到了什么问题？</div><div class="glass list menu" id="helpList"></div>
+      <div class="sec-f">自动检查会用到编程器（连接后才能测接线和芯片）；“找不到编程器”和“FT232H”两项不连接也能查。</div></div>
+    <div id="helpPane"><div class="glass card muted" style="padding:22px">在左边选一个现象。</div></div>
   </div>
 </section>
 
@@ -716,7 +728,8 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
   <div class="print-only"><h2 style="margin:0 0 6px">nsprog 接线表</h2>
     <p style="margin:0 0 12px;font-size:12px">Tang Nano 9K 的 79–86 脚是 1.8V，不要接。68–75 脚与 HDMI/屏幕座共用，接线时不要插 HDMI 线和屏幕。FT232H 只共地，不接它的电源。</p></div>
   <div id="docCard" class="hidden no-print" style="margin-bottom:18px">
-    <div class="sec-h">自检结果 <span class="pill" id="docSummary" style="margin-left:auto"></span></div>
+    <div class="sec-h">自检结果 <span class="pill" id="docSummary" style="margin-left:auto"></span>
+      <a class="btn sm hidden" id="docHelp" href="#/help/no-chip"><svg class="ic"><use href="#i-warn"/></svg>排障向导</a></div>
     <div class="glass list docres" id="docList"></div>
   </div>
   <div class="screen-only" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
@@ -1038,6 +1051,7 @@ window.addEventListener('resize', () => { refreshSegs(); hexLayout(); drawBad();
 const PAGES = [
   {id: 'device', t: '设备', i: 'plug', c: 'blue', tab: 1},
   {id: 'wiring', t: '接线', i: 'cable', c: 'red'},
+  {id: 'help', t: '排障', i: 'warn', c: 'orange'},
   {id: 'chip', t: '芯片', i: 'chip', c: 'indigo', tab: 1},
   {id: 'rw', t: '读写', i: 'rw', c: 'green', tab: 1},
   {id: 'data', t: '数据', i: 'hex', c: 'orange', tab: 1},
@@ -1048,7 +1062,7 @@ const PAGES = [
 ];
 let page = 'device';
 $('nav').innerHTML = PAGES.map((p, k) => `<a href="#/${p.id}" data-p="${p.id}"><span class="sq ${p.c}">${ic(p.i)}</span>${p.t}` +
-  `${p.id === 'history' ? '<span class="badge" id="histBadge"></span>' : ''}${p.id === 'chip' ? '<span class="badge" id="chipBadge"></span>' : ''}<span class="kbd">⌘${k + 1}</span></a>`).join('');
+  `${p.id === 'history' ? '<span class="badge" id="histBadge"></span>' : ''}${p.id === 'chip' ? '<span class="badge" id="chipBadge"></span>' : ''}${k < 9 ? `<span class="kbd">⌘${k + 1}</span>` : ''}</a>`).join('');
 $('tabbar').innerHTML = PAGES.filter(p => p.tab).map(p => `<a href="#/${p.id}" data-p="${p.id}">${ic(p.i)}${p.t}</a>`).join('') +
   `<a href="#" data-p="more" id="tabMore">${ic('more')}更多</a>`;
 $('tabMore').onclick = e => {
@@ -1059,6 +1073,8 @@ $('tabMore').onclick = e => {
     e2 => { const r = e2.target.closest('[data-go]'); if (r) { closeSheet(null); location.hash = '#/' + r.dataset.go; } });
 };
 function showPage(id) {
+  const arg = id.split('/')[1] || '';
+  id = id.split('/')[0];
   if (!PAGES.some(p => p.id === id)) id = 'device';
   page = id;
   $$('.page').forEach(s => s.classList.toggle('on', s.id === 'page-' + id));
@@ -1067,6 +1083,7 @@ function showPage(id) {
   if (id === 'history') loadHistory();
   if (id === 'lib' && !libLoaded) loadLib();
   if (id === 'wiring') wiringShow(); else wiringHide();
+  if (id === 'help') helpShow(arg);
   window.scrollTo({top: 0});
 }
 window.addEventListener('hashchange', () => showPage(location.hash.replace(/^#\/?/, '')));
@@ -1973,6 +1990,7 @@ $('docRun').onclick = async () => {
     $('docCard').classList.remove('hidden');
     const worst = r.checks.some(c => c.status === 'fail') ? 'red' : r.checks.some(c => c.status === 'warn') ? 'orange' : 'green';
     $('docSummary').className = 'pill ' + worst; $('docSummary').textContent = r.summary;
+    $('docHelp').classList.toggle('hidden', worst === 'green');
     $('docList').innerHTML = r.checks.map(c => {
       const [col, i] = DOC_ST[c.status] || DOC_ST.info;
       return `<div class="m"><span class="st sq ${col}">${ic(i)}</span><div style="min-width:0">
@@ -1984,6 +2002,57 @@ $('docRun').onclick = async () => {
   } catch (e) { fail(e); }
   finally { b.disabled = false; b.innerHTML = ic('stetho') + '一键自检'; }
 };
+/* ======================================================================
+   Troubleshooting
+   ====================================================================== */
+let HELP = null, helpSel = '';
+const helpKey = id => 'nsprog.help.' + id;
+async function helpShow(id) {
+  if (!HELP) { try { HELP = (await api('/api/troubleshoot')).symptoms; } catch (e) { fail(e); return; } }
+  $('helpList').innerHTML = HELP.map(x => `<div class="li ico tap${x.id === (id || helpSel) ? ' on' : ''}" data-help="${x.id}">
+    <span class="sq ${x.needs_device ? 'orange' : 'blue'}">${ic(x.needs_device ? 'warn' : 'plug')}</span>
+    <div class="li-l"><div class="t">${esc(x.title)}</div><div class="s">${esc(x.summary)}</div></div>${ic('arrow', 'chev')}</div>`).join('');
+  if (id) helpOpen(id);
+}
+function helpChecks(id) { try { return JSON.parse(localStorage.getItem(helpKey(id)) || '[]'); } catch (e) { return []; } }
+function helpOpen(id, results) {
+  const x = HELP && HELP.find(h => h.id === id);
+  if (!x) return;
+  helpSel = id;
+  $$('#helpList [data-help]').forEach(el => el.classList.toggle('on', el.dataset.help === id));
+  const done = helpChecks(id);
+  let res = '';
+  if (results) {
+    const col = {ok: 'green', warn: 'orange', fail: 'red'}[results.verdict];
+    res = `<div class="sec-h">自动检查结果 <span class="pill ${col}" style="margin-left:auto">${{ok: '没有发现问题', warn: '有需要注意的地方', fail: '发现问题'}[results.verdict]}</span></div>
+      <div class="glass list docres">${results.findings.map(f => {
+        const [c, i] = DOC_ST[f.status] || DOC_ST.info;
+        return `<div class="m"><span class="st sq ${c}">${ic(i)}</span><div style="min-width:0"><div class="t" style="font-weight:600">${esc(f.title)}</div>
+          <div class="d">${esc(f.detail)}</div>${f.fix && f.status !== 'ok' ? `<div class="h">→ ${esc(f.fix)}</div>` : ''}</div></div>`;
+      }).join('')}</div>`;
+  }
+  $('helpPane').innerHTML = `<div class="sec-h">${esc(x.title)}</div>
+    <div class="glass card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px"><div style="font-weight:600">自动检查</div><div class="muted" style="font-size:13px">${x.needs_device ? '读芯片 ID、接线自检、R/B#、写保护等（需要已连接）' : '检查电脑上的串口、FT232H 和烧写工具'}</div></div>
+      <button class="btn filled" id="helpRun">${ic('stetho')}开始检查</button></div>
+    ${res}
+    <div class="sec-h">逐项确认 <span class="muted" style="margin-left:auto;font-weight:400">${done.length}/${x.steps.length}</span></div>
+    <div class="glass list">${x.steps.map((st, k) => `<label class="li tap"><input type="checkbox" data-step="${k}" ${done.includes(k) ? 'checked' : ''} style="width:18px;height:18px;flex:none">
+      <div class="li-l"><div class="t" style="font-weight:400;white-space:normal">${esc(st)}</div></div></label>`).join('')}</div>
+    <div class="sec-f">勾选保存在这台电脑的浏览器里。还不行的话，把“自动检查结果”截图和 nsprog info 的输出发给我们。</div>`;
+  $('helpRun').onclick = async () => {
+    const b = $('helpRun'); b.disabled = true; b.innerHTML = ic('refresh') + '检查中…';
+    try { helpOpen(id, await post('/api/troubleshoot', {symptom: id})); }
+    catch (e) { fail(e); b.disabled = false; b.innerHTML = ic('stetho') + '开始检查'; }
+  };
+  $('helpPane').querySelectorAll('[data-step]').forEach(cb => cb.onchange = () => {
+    const cur = new Set(helpChecks(id)); cb.checked ? cur.add(+cb.dataset.step) : cur.delete(+cb.dataset.step);
+    try { localStorage.setItem(helpKey(id), JSON.stringify([...cur])); } catch (e) { /* private mode */ }
+    helpOpen(id, results);
+  });
+}
+$('helpList').addEventListener('click', e => { const r = e.target.closest('[data-help]'); if (r) location.hash = '#/help/' + r.dataset.help; });
+
 $('wirePrint').onclick = async () => {
   await wiringLoad();
   const done = wireDone();

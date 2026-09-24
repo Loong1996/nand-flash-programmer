@@ -14,7 +14,7 @@ from cocotb.utils import get_sim_time
 
 from cocotb._bridge import resume
 from simhost import (FtModel, FtSyncModel, SimDevice, SimFtLink, SimUartLink, UartModel,
-                     bridge, start)
+                     bridge, start, wait_quiet)
 
 from nsprog import jobs  # noqa: E402  (path set up by simhost)
 from nsprog import protocol as P  # noqa: E402
@@ -22,6 +22,7 @@ from nsprog.flash import SpiNand, SpiNor, detect, set_spi_clock  # noqa: E402
 
 SPI_NAND = os.environ.get("NSPROG_SIM_SPI") == "nand"
 W29N02KV = os.environ.get("NSPROG_SIM_NAND") == "w29n02kv"
+STRESS = os.environ.get("NSPROG_SIM_STRESS") == "1"
 
 
 def rnd(n, seed):
@@ -348,3 +349,125 @@ async def ft_w29n02kvsiaf(dut):
     assert int(dut.u_nand.programs.value) == 64 and int(dut.u_nand.erases.value) >= 1
     assert ft.errors == 0
     check_models(dut)
+
+
+# ----------------------------------------------------------------------------
+# Stress / fuzz variant (run_sim.py stress): garbage, truncated operations, link
+# faults and long transfers. Chip-model protocol checks are not asserted here:
+# random operations misuse the chips on purpose; the FPGA-side checks are.
+def _sanity(dev, dut):
+    from nsprog import fuzz
+
+    fuzz.restore(dev)
+    b = P.Batch()
+    rs = [b.echo(v) for v in range(0, 256, 5)]
+    dev.run(b)
+    assert [r.value for r in rs] == list(range(0, 256, 5))
+    det = detect(dev)
+    assert det.nand is not None and det.nand_id[:2] == bytes([0x2C, 0xF1]), det.messages
+    assert det.spi is not None, det.messages
+
+
+@cocotb.test(skip=not STRESS)
+async def stress_ft_fuzz_resync(dut):
+    """Random / malformed / truncated command streams over the FT232H; the host resyncs every time."""
+    from nsprog import fuzz
+
+    await start(dut)
+    ft, dev = ft_device(dut)
+    rng = random.Random(4)
+    flags_seen = 0
+
+    def host_open():
+        dev.open(negotiate=False)
+    await bridge(host_open)()
+    for rnd_i in range(4):
+        blob = fuzz.stream(rng, ops=50, safe=False)
+        ft.rxq.extend(blob)
+        await wait_quiet(ft.txq, ft.rxq)             # host drain: > 100 ms quiet
+
+        def host():
+            nonlocal flags_seen
+            dev.resync()
+            flags_seen |= dev.info.flags
+            _sanity(dev, dut)
+        await bridge(host)()
+        dut._log.info("fuzz round %d: %d bytes of garbage, engine flags %02x", rnd_i, len(blob), flags_seen)
+    assert flags_seen & 1 and flags_seen & 2, "unknown-opcode and timeout-abort flags never set"
+    check_ft(dut, ft)
+
+
+@cocotb.test(skip=not STRESS)
+async def stress_uart_framing(dut):
+    """UART garbage with framing errors and a break, then resync at 115200 and at 3 Mbaud."""
+    await start(dut)
+    uart = UartModel(dut)
+    rng = random.Random(9)
+
+    def host_open():
+        dev = SimDevice(SimUartLink(uart))
+        dev.open(negotiate=False)
+        return dev
+    dev = await bridge(host_open)()
+    for _ in range(2):
+        for _ in range(40):
+            r = rng.random()
+            if r < 0.1:
+                uart.txq.append(("badstop", rng.randrange(256)))
+            elif r < 0.12:
+                uart.txq.append(("break", 300))
+            else:
+                uart.txq.append(rng.choice([rng.randrange(256), P.NAND_WRITE, P.SPI_WRITE]))
+        await wait_quiet(uart.rxq, uart.txq)
+
+        def host():
+            dev.resync()
+            _sanity(dev, dut)
+        await bridge(host)()
+
+    def fast():
+        assert dev.negotiate_baud() == 3_000_000
+        _sanity(dev, dut)
+        dev.close()
+    await bridge(fast)()
+
+
+@cocotb.test(skip=not STRESS)
+async def stress_sync_fifo_long_read(dut):
+    """~2 MB of NAND reads over the 245 sync FIFO with TX stalls (FIFO full), RX gaps and one
+    20 ms host stall; every pass must return the written image."""
+    await start(dut)
+    ft, dev = ft_sync_device(dut, stall_every=1500, stall_cycles=2500, rx_gap_every=300)
+    await Timer(40, "us")
+    state = {}
+
+    def host_setup():
+        dev.open(negotiate=False)
+        drv = detect(dev, want="nand").nand
+        drv.set_timing("fast")
+        image = raw_image(drv, 8, seed=77)
+        rep = jobs.write(drv, image, start=0, bb="keep")
+        assert rep.ok or rep.skipped_blocks == [3], rep.summary()
+        out = io.BytesIO()
+        jobs.read(drv, out, start=0, count=8, bb="keep")
+        state.update(drv=drv, ref=out.getvalue())
+    await bridge(host_setup)()
+    total = 0
+    t0 = get_sim_time("ns")
+    for i in range(14):
+        if i == 5:
+            ft.stall_cycles = 1_200_000              # one 20 ms stall: the host stops reading
+        elif i == 6:
+            ft.stall_cycles = 2500
+
+        def host_read():
+            out = io.BytesIO()
+            jobs.read(state["drv"], out, start=0, count=8, bb="keep")
+            assert out.getvalue() == state["ref"], "pass %d differs" % i
+            return len(state["ref"])
+        total += await bridge(host_read)()
+    dt = get_sim_time("ns") - t0
+    dut._log.info("sync FIFO stress: %d bytes read in %.1f ms (%.2f MB/s incl. stalls)",
+                  total, dt / 1e6, total / dt * 1e3)
+    assert total >= 2_000_000
+    check_ft(dut, ft)

@@ -18,7 +18,7 @@ from nsprog.device import Device  # noqa: E402
 from nsprog.link import Link  # noqa: E402
 
 __all__ = ["FtModel", "FtSyncModel", "UartModel", "SimFtLink", "SimUartLink", "SimDevice",
-           "bridge", "start"]
+           "bridge", "start", "wait_quiet"]
 
 #: 1 s of host timeout = this many ns of simulated time
 TIMEOUT_SCALE_NS = 1_000_000
@@ -194,14 +194,27 @@ class UartModel:
         return round(1e12 / self.baud)
 
     async def _send(self):
+        """Queue items: a byte, ("badstop", byte) = frame with a 0 stop bit, ("break", us)."""
         d = self.dut
         while True:
             while not self.txq:
                 await Timer(1, "us")
             b = self.txq.popleft()
             bit = self.bit_ps
-            for v in [0] + [(b >> i) & 1 for i in range(8)] + [1]:
+            if isinstance(b, tuple) and b[0] == "break":
+                d.uart_rx.value = 0
+                await Timer(b[1], "us")
+                d.uart_rx.value = 1
+                await Timer(bit * 2, "ps")
+                continue
+            stop = 1
+            if isinstance(b, tuple):
+                b, stop = b[1], 0
+            for v in [0] + [(b >> i) & 1 for i in range(8)] + [stop]:
                 d.uart_rx.value = v
+                await Timer(bit, "ps")
+            if not stop:
+                d.uart_rx.value = 1
                 await Timer(bit, "ps")
 
     async def _recv(self):
@@ -277,6 +290,22 @@ class SimUartLink(_SimLinkBase):
     @property
     def baudrate(self):
         return self.uart.baud
+
+
+async def wait_quiet(buf, rxq, quiet_ns=150_000_000, step_ns=1_000_000):
+    """Model a host drain: wait until nothing is pending towards the FPGA and nothing
+    arrived from it for ``quiet_ns`` of simulated time (the engine aborts a partial
+    operation after 100 ms), then discard what arrived."""
+    last = get_sim_time("ns")
+    seen = len(buf)
+    while True:
+        await Timer(step_ns, "ns")
+        now = get_sim_time("ns")
+        if len(buf) != seen or rxq:
+            seen, last = len(buf), now
+        elif now - last >= quiet_ns:
+            break
+    del buf[:]
 
 
 class SimDevice(Device):
