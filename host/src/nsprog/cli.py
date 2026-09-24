@@ -668,7 +668,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _safe_output() -> None:
+    """Never crash on ✓ / Chinese text when the console or pipe uses a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        enc = getattr(stream, "encoding", None) or "ascii"
+        try:
+            "✓中".encode(enc)
+        except (UnicodeEncodeError, LookupError):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+            except (AttributeError, ValueError):
+                pass
+
+
 def main(argv=None) -> int:
+    _safe_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING - 10 * args.verbose,

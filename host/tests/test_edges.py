@@ -141,6 +141,17 @@ def test_ubi_rejects_non_ubi():
 
 
 # ------------------------------------------------------------------ web API errors
+def _wait_idle(c, timeout=30.0):
+    import time
+
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if c.get("/api/state").json()["job"]["state"] != "running":
+            return
+        time.sleep(0.02)
+    raise AssertionError("web job did not finish")
+
+
 def test_web_api_errors(tmp_path, monkeypatch):
     pytest.importorskip("httpx")
     from fastapi.testclient import TestClient
@@ -159,12 +170,10 @@ def test_web_api_errors(tmp_path, monkeypatch):
     c.post("/api/connect", json={"port": "emu"})
     c.post("/api/detect", json={})
     assert c.post("/api/job/read?target=nand&start=99999").status_code in (200, 400)
+    _wait_idle(c)
     # results: clamping and bad searches
-    c.post("/api/tools/strip?page=2048&oob=64&ppb=4", content=b"\xff" * GEO.raw * 4)
-    for _ in range(200):
-        s = c.get("/api/state").json()
-        if s["job"]["state"] != "running":
-            break
+    assert c.post("/api/tools/strip?page=2048&oob=64&ppb=4", content=b"\xff" * GEO.raw * 4).status_code == 200
+    _wait_idle(c)
     size = c.get("/api/state").json()["result"]["size"]
     assert len(c.get("/api/result/bytes?offset=-5&length=10").content) == 10
     assert c.get("/api/result/bytes?offset=%d&length=10" % size).content == b""
@@ -185,3 +194,14 @@ def test_quit_only_in_app_mode_and_instance_probe(tmp_path, monkeypatch):
     assert c.get("/api/state").json()["app_mode"] is False
     assert c.post("/api/quit").status_code == 403
     assert running_instance(1) is None           # nothing listens on port 1
+
+
+def test_cli_legacy_codepage_output():
+    """Windows pipes/consoles may be cp1252: ✓ and Chinese must not crash the CLI."""
+    import subprocess
+    import sys
+
+    env = dict(os.environ, PYTHONIOENCODING="cp1252")
+    r = subprocess.run([sys.executable, "-c", "import sys; from nsprog.cli import main; sys.exit(main())",
+                        "-p", "emu", "doctor"], env=env, capture_output=True, timeout=120)
+    assert r.returncode == 0, r.stderr
