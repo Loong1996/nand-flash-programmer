@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e "host[test]" httpx
+      - run: pytest -q host
+
+  rtl-sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y iverilog
+      - run: pip install -e host cocotb
+      - run: python fpga/sim/run_sim.py
+
+  bitstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula
+      - run: python fpga/build.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bitstream
+          path: fpga/build/nsprog_tangnano9k.fs

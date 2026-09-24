@@ -189,7 +189,10 @@ def list_serial_ports() -> List[dict]:
             "pid": p.pid,
             "likely": _likely_tang(p),
         })
-    out.sort(key=lambda d: (not d["likely"], d["device"]))
+    # The Tang Nano 9K exposes JTAG (interface A) and UART (interface B); the
+    # UART is the higher-numbered port on every OS (ttyUSB1, ...usbserial-xxx1, COMn+1).
+    out.sort(key=lambda d: d["device"], reverse=True)
+    out.sort(key=lambda d: not d["likely"])
     return out
 
 

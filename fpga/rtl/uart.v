@@ -20,7 +20,9 @@ module uart_rx (
         end else if (!busy) begin
             if (!rxd) begin
                 busy <= 1'b1;
-                cnt  <= {1'b0, div[15:1]};   // move to the middle of the start bit
+                // Middle of the start bit, minus ~3 cycles of synchronizer and
+                // detection latency (matters at 3 Mbaud, where a bit is 9 cycles).
+                cnt  <= (div[15:1] > 16'd3) ? {1'b0, div[15:1]} - 16'd3 : 16'd0;
                 bitn <= 4'd0;
             end
         end else if (cnt != 0) begin

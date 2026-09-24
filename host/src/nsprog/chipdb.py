@@ -35,6 +35,10 @@ def _int(v: str) -> Optional[int]:
     return int(v, 0)
 
 
+def _volts(v: float) -> str:
+    return "%.1fV" % v if v else "voltage unknown (check datasheet)"
+
+
 def _hexbytes(v: str) -> bytes:
     return bytes.fromhex(v.strip())
 
@@ -92,9 +96,9 @@ class NandChip:
         return bool(ids) and len(idb) >= len(ids) and all(idb[k] == v for k, v in enumerate(ids))
 
     def describe(self) -> str:
-        return "%s: %d MiB, page %d+%d, %d pages/block, %d blocks, %.1fV" % (
+        return "%s: %d MiB, page %d+%d, %d pages/block, %d blocks, %s" % (
             self.name, self.total_size >> 20, self.page_size, self.spare_size,
-            self.pages_per_block, self.blocks, self.voltage)
+            self.pages_per_block, self.blocks, _volts(self.voltage))
 
 
 _TIMING_COLS = ["tCS", "tCLS", "tALS", "tCLR", "tAR", "tWP", "tRP", "tDS", "tCH", "tCLH",
@@ -178,8 +182,8 @@ class SpiNorChip:
     def describe(self) -> str:
         size = self.total_size
         s = "%d MiB" % (size >> 20) if size >= 1 << 20 else "%d KiB" % (size >> 10)
-        return "%s: %s, page %d, erase %d, %.1fV" % (self.name, s, self.page_size,
-                                                     self.block_size, self.voltage)
+        return "%s: %s, page %d, erase %d, %s" % (self.name, s, self.page_size,
+                                                  self.block_size, _volts(self.voltage))
 
 
 @lru_cache(maxsize=None)
