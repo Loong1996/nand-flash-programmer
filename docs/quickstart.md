@@ -47,8 +47,8 @@ parallel NAND: no chip (ID FFFFFFFFFFFFFFFF)
 SPI: no chip (ID FFFFFFFFFF)
 ```
 
-- 上位机会自动把串口从 115200 提到 3M；如果不稳定，加 `--no-fast-uart`。
-- 自动找不到串口时手动指定：macOS 用 `-p /dev/cu.usbserial-XXXX1`，Linux 用 `-p /dev/ttyUSB1`，Windows 用 `-p COM5`。Tang Nano 9K 会出现两个口，**编号大的那个**是串口。
+- 上位机会自动把串口从 115200 提到 3M；如果不稳定，用 `nsprog --no-fast-uart info`（全局参数要写在子命令前面）。
+- 自动找不到串口时手动指定：`nsprog -p /dev/cu.usbserial-XXXX1 info`（macOS）、`nsprog -p /dev/ttyUSB1 info`（Linux）、`nsprog -p COM5 info`（Windows）。Tang Nano 9K 会出现两个口，**编号大的那个**是串口。
 - `nsprog selftest` 可以对链路做压力测试。
 
 ## 4. 接线
@@ -125,7 +125,7 @@ nsprog web
 
 | 现象 | 处理 |
 |---|---|
-| `programmer not responding` | LED0 不闪：重新烧固件。LED0 闪：换另一个串口号（`-p`），或加 `--no-fast-uart` |
+| `programmer not responding` | LED0 不闪：重新烧固件。LED0 闪：换另一个串口号（`nsprog -p 端口 info`），或者用 `nsprog --no-fast-uart info` |
 | NAND ID 全是 FF | 芯片没放好或方向反了；CE#/RE# 接错；VCC、GND 没接 |
 | NAND ID 全是 00 | 数据线短路到地；芯片没供电 |
 | ID 每次读都不一样 | 缺去耦电容；地线太少；杜邦线太长 |
