@@ -20,19 +20,21 @@ module top #(
     output wire       uart_tx,
     input  wire       uart_rx,
 
+    // All flash-side pins are bidirectional so the pin test (PIN_TEST op) can
+    // drive any single line and read back every pad.
     inout  wire [7:0] nand_io,
-    output wire       nand_cle,
-    output wire       nand_ale,
-    output wire       nand_we_n,
-    output wire       nand_re_n,
-    output wire       nand_ce_n,
-    output wire       nand_wp_n,
-    input  wire       nand_rb_n,
+    inout  wire       nand_cle,
+    inout  wire       nand_ale,
+    inout  wire       nand_we_n,
+    inout  wire       nand_re_n,
+    inout  wire       nand_ce_n,
+    inout  wire       nand_wp_n,
+    inout  wire       nand_rb_n,
 
-    output wire       spi_cs_n,
-    output wire       spi_sck,
+    inout  wire       spi_cs_n,
+    inout  wire       spi_sck,
     inout  wire       spi_io0,     // MOSI / DI  (IO0 in quad mode)
-    input  wire       spi_io1,     // MISO / DO  (IO1)
+    inout  wire       spi_io1,     // MISO / DO  (IO1)
     inout  wire       spi_io2,     // WP#        (IO2)
     inout  wire       spi_io3,     // HOLD#      (IO3)
 
@@ -240,6 +242,10 @@ module top #(
     wire [7:0] e_io_o;
     wire       e_cs, e_sck, e_mosi, e_io2_hi, e_io3_hi, e_spi_park, e_qin;
     wire       nand_act, spi_act, err;
+    wire [2:0] t_mode;
+    wire [4:0] t_sel;
+    wire       t_val;
+    wire [20:0] t_lv;
 
     engine #(.CLK_HZ(CLK_HZ), .BAUD_DIV_DEFAULT(BAUD_DIV), .RX_AW(RX_AW)) u_eng (
         .clk(clk), .rst(rst),
@@ -253,23 +259,73 @@ module top #(
         .spi_io2_hi(e_io2_hi), .spi_io3_hi(e_io3_hi), .spi_park(e_spi_park),
         .baud_div(baud_div), .active_port(active_port), .ft_status(ft_status),
         .rx_overflow(rx_overflow),
+        .test_mode(t_mode), .test_sel(t_sel), .test_val(t_val), .test_lv(t_lv),
         .nand_activity(nand_act), .spi_activity(spi_act), .err_led(err)
     );
 
     // ------------------------------------------------------------ pins
-    assign nand_io   = (e_io_oe && !e_nand_park) ? e_io_o : 8'bz;
-    assign nand_cle  = e_nand_park ? 1'bz : e_cle;
-    assign nand_ale  = e_nand_park ? 1'bz : e_ale;
-    assign nand_we_n = e_nand_park ? 1'bz : ~e_we;
-    assign nand_re_n = e_nand_park ? 1'bz : ~e_re;
-    assign nand_ce_n = e_nand_park ? 1'bz : ~e_ce;
-    assign nand_wp_n = e_nand_park ? 1'bz : e_wp_hi;
+    // Pin test index: 0-7 NAND IO0-7, 8 CLE, 9 ALE, 10 WE#, 11 RE#, 12 CE#,
+    // 13 WP#, 14 R/B#, 15 SPI CS#, 16 SCK, 17 IO0/DI, 18 IO1/DO, 19 IO2, 20 IO3.
+    // In test mode every one of these pins is released except the selected one.
+    // The test controls are registered so that each pad's OE and O come from a
+    // single LUT fed by flip-flops, and a released pin keeps its normal output
+    // value (only OE drops; idle levels equal the pulls): entering, leaving or
+    // changing the test mode can never glitch a strobe such as WE#, RE# or CE#.
+    reg         t_on;
+    reg  [20:0] t_drv;
+    reg         t_val_r;
+    genvar gi;
+    always @(posedge clk) begin
+        if (rst) begin
+            t_on    <= 1'b0;
+            t_drv   <= 21'd0;
+            t_val_r <= 1'b0;
+        end else begin
+            t_on    <= (t_mode != 3'd0);
+            t_drv   <= (t_mode >= 3'd2 && t_sel < 5'd21) ? (21'd1 << t_sel) : 21'd0;
+            t_val_r <= t_val;
+        end
+    end
 
-    assign spi_cs_n  = e_spi_park ? 1'bz : ~e_cs;
-    assign spi_sck   = e_spi_park ? 1'bz : e_sck;
-    assign spi_io0   = (e_spi_park || e_qin) ? 1'bz : e_mosi;
-    assign spi_io2   = (e_spi_park || e_qin) ? 1'bz : e_io2_hi;
-    assign spi_io3   = (e_spi_park || e_qin) ? 1'bz : e_io3_hi;
+    // Normal-mode output enables and values, then one tri-state per pin.
+    wire [20:0] n_oe = {
+        !(e_spi_park || e_qin), !(e_spi_park || e_qin), 1'b0, !(e_spi_park || e_qin),
+        !e_spi_park, !e_spi_park,
+        1'b0, !e_nand_park, !e_nand_park, !e_nand_park, !e_nand_park, !e_nand_park, !e_nand_park,
+        {8{e_io_oe && !e_nand_park}}};
+    wire [20:0] n_o = {
+        e_io3_hi, e_io2_hi, 1'b1, e_mosi,
+        e_sck, ~e_cs,
+        1'b1, e_wp_hi, ~e_ce, ~e_re, ~e_we, e_ale, e_cle,
+        e_io_o};
+    wire [20:0] p_oe = t_on ? t_drv : n_oe;
+    wire [20:0] p_o  = (t_drv & {21{t_val_r}}) | (~t_drv & n_o);
+
+    generate
+        for (gi = 0; gi < 8; gi = gi + 1) begin : g_nio
+            assign nand_io[gi] = p_oe[gi] ? p_o[gi] : 1'bz;
+        end
+    endgenerate
+    assign nand_cle  = p_oe[8]  ? p_o[8]  : 1'bz;
+    assign nand_ale  = p_oe[9]  ? p_o[9]  : 1'bz;
+    assign nand_we_n = p_oe[10] ? p_o[10] : 1'bz;
+    assign nand_re_n = p_oe[11] ? p_o[11] : 1'bz;
+    assign nand_ce_n = p_oe[12] ? p_o[12] : 1'bz;
+    assign nand_wp_n = p_oe[13] ? p_o[13] : 1'bz;
+    assign nand_rb_n = p_oe[14] ? p_o[14] : 1'bz;
+    assign spi_cs_n  = p_oe[15] ? p_o[15] : 1'bz;
+    assign spi_sck   = p_oe[16] ? p_o[16] : 1'bz;
+    assign spi_io0   = p_oe[17] ? p_o[17] : 1'bz;
+    assign spi_io1   = p_oe[18] ? p_o[18] : 1'bz;
+    assign spi_io2   = p_oe[19] ? p_o[19] : 1'bz;
+    assign spi_io3   = p_oe[20] ? p_o[20] : 1'bz;
+
+    sync2 #(.W(21)) u_tlv (
+        .clk(clk),
+        .d({spi_io3, spi_io2, spi_io1, spi_io0, spi_sck, spi_cs_n, nand_rb_n, nand_wp_n,
+            nand_ce_n, nand_re_n, nand_we_n, nand_ale, nand_cle, nand_io}),
+        .q(t_lv)
+    );
 
     // ------------------------------------------------------------ LEDs (active low)
     reg [23:0] hb;

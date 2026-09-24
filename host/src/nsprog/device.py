@@ -40,12 +40,27 @@ class Device:
     def __init__(self, link: Link, window: Optional[int] = None):
         self.link = link
         self.window = window or 3584
-        self.info: Optional[P.Info] = None
+        self._info: Optional[P.Info] = None
         self._marker = 0
         self.pin_ctrl = P.PIN_CTRL_DEFAULT
         self.cancelled: Callable[[], bool] = lambda: False
 
     # ------------------------------------------------------------ setup
+    @property
+    def opened(self) -> bool:
+        return self._info is not None
+
+    @property
+    def info(self) -> P.Info:
+        """INFO of the programmer (available after :meth:`open`)."""
+        if self._info is None:
+            raise ProtocolError("device is not open")
+        return self._info
+
+    @info.setter
+    def info(self, value: P.Info) -> None:
+        self._info = value
+
     def open(self, negotiate: bool = True) -> P.Info:
         try:
             self.resync()
@@ -202,7 +217,7 @@ class Device:
             raise ProtocolError("stream out of sync (marker %02x != %02x)" % (raw[-1], seg.marker))
         pos = 0
         for op in seg.ops:
-            if op.rlen:
+            if op.rlen and op.result is not None:
                 op.result.parts.append(raw[pos:pos + op.rlen])
                 pos += op.rlen
             if op.result is not None and op.last_part:
@@ -256,7 +271,8 @@ def connect(port: Optional[str] = None, *, emulate: Optional[str] = None,
     if emulate or (port or "").startswith("emu"):
         from .emulator import EmulatorLink
 
-        spec = emulate or (port.split(":", 1)[1] if ":" in port else "all")
+        spec_port = port or ""
+        spec = emulate or (spec_port.split(":", 1)[1] if ":" in spec_port else "all")
         dev = Device(EmulatorLink.from_spec(spec))
         dev.open(negotiate=False)
         return dev
@@ -271,7 +287,7 @@ def connect(port: Optional[str] = None, *, emulate: Optional[str] = None,
             dev.close()
             if sync:
                 raise LinkError("%s. In sync FIFO mode the FPGA needs CLKOUT (FT232H AC5) on "
-                                "pin 36 and gateware >= 1.1; try port 'ft232h' (async)" % e)
+                                "pin 36 and gateware >= 1.1; try port 'ft232h' (async)" % e) from e
             raise
         return dev
 

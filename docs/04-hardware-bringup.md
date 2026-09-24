@@ -6,7 +6,7 @@
 
 1. **FPGA 在不在运行**：LED0 闪烁。不闪 → 重新执行 `nsprog fpga-flash`，然后按复位。
 2. **链路通不通**：`nsprog info` 能打印 gateware 版本，`nsprog selftest` 不报错。
-3. **接线对不对**：不放芯片时运行 `nsprog pins`，数据总线应为 `11111111`，R/B# 为 high。
+3. **接线对不对**：不放芯片时运行 `nsprog doctor`（短路、空闲电平），再用 `nsprog doctor --probe` 在座子上逐脚碰一遍（断线）。单根线可以用 `nsprog pintest --pin 名称 --mode toggle` 让它 2 Hz 翻转，用万用表或 LED 看。
 4. **芯片能否识别**：`nsprog info`。
 5. **读取是否稳定**：读两遍比较（`read` 之后 `verify --oob`）。
 6. **最后才写**。

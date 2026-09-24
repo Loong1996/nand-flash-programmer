@@ -2,7 +2,8 @@ name: apps
 
 # Standalone nsprog executables (no Python needed) for macOS, Windows and Linux.
 # Every run uploads them as workflow artifacts; pushing a tag like v0.2.0 also
-# attaches them to a GitHub release.
+# attaches them to a GitHub release. A manual run with `release_tag` set builds
+# `build_ref` (default: the run's commit), creates that tag and publishes the release.
 
 on:
   push:
@@ -10,6 +11,15 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Create this tag and publish a release (e.g. v0.2.0); empty = artifacts only"
+        required: false
+        default: ""
+      build_ref:
+        description: "Commit / branch / tag to build (default: the run's commit)"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -18,29 +28,66 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # optional (repository secrets): Developer ID signing + notarisation of the macOS app
+      MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+      MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ./host pyinstaller
+      - run: pip install ./host pyinstaller pillow
+      # single-file executable (all three systems)
       - run: python host/packaging/build_app.py
+      # macOS: nsprog.app in a .dmg
+      - name: Import signing certificate
+        if: runner.os == 'macOS' && env.MACOS_CERT_P12 != ''
+        run: |
+          echo "$MACOS_CERT_P12" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+      - if: runner.os == 'macOS' && hashFiles('host/packaging/icon.py') != ''
+        run: python host/packaging/build_app.py --app
+      # Windows: installer (Inno Setup)
+      - if: runner.os == 'Windows' && hashFiles('host/packaging/nsprog.iss') != ''
+        run: choco install innosetup -y --no-progress
+      - if: runner.os == 'Windows' && hashFiles('host/packaging/nsprog.iss') != ''
+        run: python host/packaging/build_app.py --installer
       - uses: actions/upload-artifact@v4
         with:
           name: nsprog-${{ runner.os }}
-          path: host/dist/*
+          path: host/dist/nsprog-*
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.build_ref || github.sha }}
+      - id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          target_commitish: ${{ steps.rev.outputs.sha }}
+          name: nsprog ${{ inputs.release_tag || github.ref_name }}
+          generate_release_notes: true
           files: dist/*

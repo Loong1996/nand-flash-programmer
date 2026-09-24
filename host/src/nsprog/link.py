@@ -171,7 +171,6 @@ class FtdiLink(Link):
 
 def find_ft232h_url() -> Optional[str]:
     try:
-        from pyftdi.ftdi import Ftdi
         from pyftdi.usbtools import UsbTools
     except Exception:  # pragma: no cover - pyftdi missing
         return None

@@ -42,8 +42,11 @@ def parse_param_page(raw: bytes) -> Optional[OnfiParams]:
             continue
         if struct.unpack_from("<H", pp, 254)[0] != onfi_crc16(pp[:254]):
             continue
-        u16 = lambda o: struct.unpack_from("<H", pp, o)[0]
-        u32 = lambda o: struct.unpack_from("<I", pp, o)[0]
+        def u16(o: int, pp: bytes = pp) -> int:
+            return struct.unpack_from("<H", pp, o)[0]
+
+        def u32(o: int, pp: bytes = pp) -> int:
+            return struct.unpack_from("<I", pp, o)[0]
         return OnfiParams(
             revision=u16(4),
             manufacturer=pp[32:44].decode("ascii", "replace").strip(),

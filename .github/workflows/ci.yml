@@ -18,6 +18,32 @@ jobs:
       - run: pip install -e "host[test]" httpx
       - run: pytest -q host
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e "host[test]" ruff "mypy==2.3.1" types-pyserial
+      - run: ruff check host/src host/tests host/packaging
+        working-directory: .
+      - run: mypy src packaging
+        working-directory: host
+
+  gate-sim:
+    # yosys netlist (the bitstream's logic) simulated with the same tests as the RTL
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y iverilog
+      - run: pip install -e host cocotb yowasp-yosys
+      - run: python fpga/sim/run_sim.py gate
+
   rtl-sim:
     runs-on: ubuntu-latest
     timeout-minutes: 90

@@ -394,9 +394,9 @@ class SpiNand(FlashDriver):
     def _read_ops(self, b: P.Batch, row: int, col: int, n: int):
         self._cmd(b, b"\x13" + self._row(row))
         ready = self._poll(b, 10)
-        col = self._col(row, col).to_bytes(2, "big")
+        cb = self._col(row, col).to_bytes(2, "big")
         b.spi_cs(True)
-        b.spi_write(b"\x03" + (b"\x00" + col if self.chip.read_dummy_first else col + b"\x00"))
+        b.spi_write(b"\x03" + (b"\x00" + cb if self.chip.read_dummy_first else cb + b"\x00"))
         data = b.spi_read(n)
         b.spi_cs(False)
         return data, ready
@@ -615,9 +615,9 @@ class SpiNor(FlashDriver):
     @property
     def quad_capable(self) -> bool:
         c = self.chip
-        info = self.dev.info
         return bool(c.quad_cmd == 0x6B and c.qer in self.QE_BITS and c.quad_dummy % 8 == 0
-                    and c.status_cmd == 0x05 and info is not None and info.caps & P.CAP_QSPI)
+                    and c.status_cmd == 0x05 and self.dev.opened
+                    and self.dev.info.caps & P.CAP_QSPI)
 
     def _qe(self) -> bool:
         reg, bit = self.QE_BITS[self.chip.qer]
@@ -678,7 +678,7 @@ class SpiNor(FlashDriver):
         addr = self._abytes(self._dev_addr(off))
         b.spi_cs(True)
         if self.quad_active:
-            b.spi_write(bytes([c.quad_cmd]) + addr + b"\x00" * (c.quad_dummy // 8))
+            b.spi_write(bytes([c.quad_cmd or 0x6B]) + addr + b"\x00" * (c.quad_dummy // 8))
             r = b.spi_read4(n)
         else:
             b.spi_write(bytes([c.read_cmd]) + addr + b"\x00" * c.read_dummy)
@@ -868,9 +868,9 @@ def detect_spi(dev: Device, chip_name: Optional[str] = None, ecc: bool = False,
         for c in chipdb.spi_nor_chips():
             if c.name.lower() == chip_name.lower():
                 return SpiNor(dev, c)
-        for c in chipdb.spi_nand_chips():
-            if c.name.lower() == chip_name.lower():
-                d = SpiNand(dev, c, ecc=ecc)
+        for sn in chipdb.spi_nand_chips():
+            if sn.name.lower() == chip_name.lower():
+                d = SpiNand(dev, sn, ecc=ecc)
                 d.setup()
                 return d
         raise FlashError("unknown SPI chip %r" % chip_name)
@@ -903,8 +903,9 @@ def detect_spi(dev: Device, chip_name: Optional[str] = None, ecc: bool = False,
         det.messages.append("SPI NOR: %s (database%s, ID %s)" % (
             nor.name, " + SFDP" if sfdp else "", jedec[:3].hex().upper()))
         return SpiNor(dev, nor)
-    if sfdp is not None:
-        chip = _apply_sfdp(chipdb.generic_spi_nor(jedec, sfdp.size), sfdp)
+    generic = chipdb.generic_spi_nor(jedec, sfdp.size) if sfdp is not None else None
+    if sfdp is not None and generic is not None:
+        chip = _apply_sfdp(generic, sfdp)
         det.messages.append("SPI NOR: unknown ID %s, geometry from SFDP (%d KiB)"
                             % (jedec[:3].hex().upper(), sfdp.size >> 10))
         return SpiNor(dev, chip)

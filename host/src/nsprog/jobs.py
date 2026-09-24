@@ -102,6 +102,8 @@ class Context:
 def _block_range(drv: FlashDriver, start: int, count: Optional[int]) -> List[int]:
     if start < 0 or start >= drv.blocks:
         raise FlashError("start block %d out of range (0..%d)" % (start, drv.blocks - 1))
+    if count is not None and count < 1:
+        raise FlashError("block count must be at least 1 (got %d)" % count)
     end = drv.blocks if count is None else start + count
     if end > drv.blocks:
         raise FlashError("range ends at block %d, chip has %d blocks" % (end, drv.blocks))
@@ -114,7 +116,7 @@ def scan_bad_blocks(drv: FlashDriver, ctx: Optional[Context] = None,
     blocks = _block_range(drv, start, count)
     if not drv.has_bad_blocks:
         return []
-    bad = []
+    bad: List[int] = []
     step = 256
     for i in range(0, len(blocks), step):
         ctx.check()
@@ -127,7 +129,7 @@ def scan_bad_blocks(drv: FlashDriver, ctx: Optional[Context] = None,
 
 def _runs(blocks: List[int]):
     """Group consecutive block numbers."""
-    run = []
+    run: List[int] = []
     for b in blocks:
         if run and b != run[-1] + 1:
             yield run
@@ -320,8 +322,9 @@ def erase(drv: FlashDriver, *, start: int = 0, count: Optional[int] = None, bb: 
         rep.skipped_blocks = list(rep.bad_blocks)
     drv.begin_write()
     try:
+        erase_chip = getattr(drv, "erase_chip", None)
         whole = (not drv.has_bad_blocks and start == 0 and len(blocks) == drv.blocks
-                 and getattr(drv, "erase_chip", None) is not None)
+                 and erase_chip is not None)
         if whole:
             ctx.msg("chip erase (this can take a while)")
             ticks = [0]
@@ -329,7 +332,7 @@ def erase(drv: FlashDriver, *, start: int = 0, count: Optional[int] = None, bb: 
             def tick():
                 ticks[0] += 1
                 ctx.progress("erase", min(ticks[0], 19), 20)
-            if drv.erase_chip(tick):
+            if erase_chip is not None and erase_chip(tick):
                 ctx.progress("erase", 1, 1)
                 blocks = []
         step = 64 if drv.has_bad_blocks else 16

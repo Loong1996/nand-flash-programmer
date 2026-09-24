@@ -19,6 +19,7 @@ SET_REG = 0x03
 DELAY_US = 0x04
 SET_BAUD = 0x05
 GET_PINS = 0x06
+PIN_TEST = 0x07           # wiring diagnostics, gateware >= 1.2
 NAND_CE = 0x10
 NAND_CMD = 0x11
 NAND_ADDR = 0x12
@@ -40,6 +41,14 @@ CAP_FT245 = 0x08
 CAP_UART = 0x10
 CAP_QSPI = 0x20           # SPI_READ4
 CAP_SYNC245 = 0x40        # FT232H 245 synchronous FIFO
+CAP_PIN_TEST = 0x80       # PIN_TEST
+
+# PIN_TEST modes
+PT_OFF = 0                # normal operation
+PT_RELEASE = 1            # all test pins released (read-only)
+PT_LOW = 2                # selected pin driven low, others released
+PT_HIGH = 3               # selected pin driven high, others released
+PT_TOGGLE = 4             # selected pin toggles at 2 Hz, others released
 
 # Registers
 REG_T_SETUP = 0
@@ -76,7 +85,7 @@ class Result:
     def __init__(self, decode: Optional[Callable[[bytes], object]] = None):
         self.parts: List[bytes] = []
         self.decode = decode
-        self._value = None
+        self._value: object = None
         self._done = False
 
     def _finish(self) -> None:
@@ -171,6 +180,12 @@ class Batch:
         self.ops.append(Op(bytes(data), rlen, res, True, wait_ms))
         return res
 
+    def _rop(self, data: bytes, rlen: int, decode=None, wait_ms: int = 0) -> Result:
+        """Operation that returns ``rlen`` > 0 bytes."""
+        res = Result(decode)
+        self.ops.append(Op(bytes(data), rlen, res, True, wait_ms))
+        return res
+
     def extend(self, other: "Batch") -> "Batch":
         self.ops.extend(other.ops)
         return self
@@ -187,10 +202,10 @@ class Batch:
         self._op(bytes([NOP]))
 
     def echo(self, b: int) -> Result:
-        return self._op(bytes([ECHO, b & 0xFF]), 1, lambda r: r[0])
+        return self._rop(bytes([ECHO, b & 0xFF]), 1, lambda r: r[0])
 
     def info(self) -> Result:
-        return self._op(bytes([INFO]), INFO_LEN, Info.parse)
+        return self._rop(bytes([INFO]), INFO_LEN, Info.parse)
 
     def set_reg(self, reg: int, value: int) -> None:
         self._op(bytes([SET_REG, reg]) + _u16(value))
@@ -202,9 +217,17 @@ class Batch:
             us -= step
 
     def get_pins(self) -> Result:
-        return self._op(bytes([GET_PINS]), 2, Pins.parse)
+        return self._rop(bytes([GET_PINS]), 2, Pins.parse)
 
     # ---------------------------------------------------------------- NAND
+    def pin_test(self, pin: int, mode: int) -> Result:
+        """Set the pin-test mode; returns the 21 pad levels (bit i = test pin i)
+        sampled 10 us later."""
+        if not 0 <= pin < 32 or not 0 <= mode <= PT_TOGGLE:
+            raise ValueError("bad pin test arguments")
+        return self._rop(bytes([PIN_TEST, pin, mode]), 3,
+                        lambda raw: int.from_bytes(raw, "little"))
+
     def nand_ce(self, on: bool) -> None:
         self._op(bytes([NAND_CE, 1 if on else 0]))
 
@@ -227,11 +250,11 @@ class Batch:
         return self._read_op(NAND_READ, n)
 
     def nand_wait_rb(self, timeout_ms: int) -> Result:
-        return self._op(bytes([NAND_WAIT_RB]) + _u16(timeout_ms), 1,
+        return self._rop(bytes([NAND_WAIT_RB]) + _u16(timeout_ms), 1,
                         lambda r: r[0] == 0, wait_ms=timeout_ms)
 
     def nand_poll_status(self, mask: int, value: int, timeout_ms: int) -> Result:
-        return self._op(bytes([NAND_POLL_STATUS, mask, value]) + _u16(timeout_ms), 2,
+        return self._rop(bytes([NAND_POLL_STATUS, mask, value]) + _u16(timeout_ms), 2,
                         _poll_decode, wait_ms=timeout_ms)
 
     # ---------------------------------------------------------------- SPI
@@ -265,7 +288,7 @@ class Batch:
         cmd = bytes(cmd)
         if not 1 <= len(cmd) <= 4:
             raise ValueError("SPI_POLL command must be 1-4 bytes")
-        return self._op(bytes([SPI_POLL, len(cmd)]) + cmd + bytes([mask, value]) + _u16(timeout_ms),
+        return self._rop(bytes([SPI_POLL, len(cmd)]) + cmd + bytes([mask, value]) + _u16(timeout_ms),
                         2, _poll_decode, wait_ms=timeout_ms)
 
     # ---------------------------------------------------------------- internal

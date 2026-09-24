@@ -12,6 +12,7 @@ import cocotb
 from cocotb.triggers import Timer
 from cocotb.utils import get_sim_time
 
+from cocotb._bridge import resume
 from simhost import (FtModel, FtSyncModel, SimDevice, SimFtLink, SimUartLink, UartModel,
                      bridge, start)
 
@@ -238,6 +239,48 @@ async def ft_spi_nor_quad(dut):
         out = io.BytesIO()
         jobs.read(drv, out, start=2, count=2)
         assert out.getvalue()[:len(image)] == image
+    await bridge(host)()
+    check_models(dut)
+
+
+@cocotb.test(skip=SPI_NAND)
+async def ft_pin_test_doctor(dut):
+    """PIN_TEST + nsprog doctor on the RTL: clean wiring, then an injected IO2-IO3 short."""
+    from nsprog import doctor, wiring
+
+    await start(dut)
+    ft, dev = ft_device(dut)
+
+    def host():
+        info = dev.open(negotiate=False)
+        assert info.caps & P.CAP_PIN_TEST and info.gw_version == "1.2"
+        b = P.Batch()
+        idle = b.pin_test(0, P.PT_RELEASE)
+        ce_low = b.pin_test(12, P.PT_LOW)
+        io0_low = b.pin_test(17, P.PT_LOW)
+        b.pin_test(0, P.PT_OFF)
+        dev.run(b)
+        assert idle.value == wiring.idle_levels(), hex(idle.value)
+        assert ce_low.value == wiring.idle_levels() & ~(1 << 12)
+        assert io0_low.value == wiring.idle_levels() & ~(1 << 17)
+        checks = {c.key: c for c in doctor.run(dev)}
+        assert checks["idle"].status == "ok", checks["idle"].detail
+        assert checks["shorts"].status == "ok", checks["shorts"].detail
+        assert checks["stuck"].status == "ok", checks["stuck"].detail
+        assert checks["chips"].status == "ok" and "W25Q16JV" in checks["chips"].detail
+        resume(set_short)(1)
+        checks = {c.key: c for c in doctor.run(dev, detect_chips=False)}
+        resume(set_short)(0)
+        assert checks["shorts"].status == "fail"
+        assert "IO2" in checks["shorts"].detail and "IO3" in checks["shorts"].detail
+        assert checks["stuck"].status == "ok"
+        # normal operation is back afterwards
+        assert detect(dev, want="nand").nand is not None
+
+    async def set_short(v):
+        dut.short_io23.value = v
+        await Timer(100, "ns")
+
     await bridge(host)()
     check_models(dut)
 

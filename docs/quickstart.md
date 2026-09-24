@@ -19,7 +19,11 @@ nsprog --version
 
 - **Linux**：`pipx install ./host`；把用户加入 `dialout` 组，才能访问串口（`sudo usermod -aG dialout $USER`，重新登录后生效）。openFPGALoader 用发行版自带的包即可。
 - **Windows**：从 python.org 安装 Python，执行 `py -m pip install .\host`。烧 FPGA 可以用 openFPGALoader 的 Windows 版，也可以用高云官方的 Gowin Programmer（选择 `host\src\nsprog\bitstream\nsprog_tangnano9k.fs`）。
-- **不装 Python**：下载单文件程序（GitHub Actions → `apps` 工作流 → Artifacts，或 Release 附件）：macOS 用 `nsprog-macos-arm64`（第一次运行前 `chmod +x`，并在“系统设置 → 隐私与安全性”里允许），Windows 用 `nsprog-windows-x86_64.exe`。双击打开网页界面；在终端里加参数运行就是 `nsprog` 命令行。用 FT232H 时 macOS 还需要 `brew install libusb`。
+- **不装 Python**：从 [Release](https://github.com/Loong1996/nand-flash-programmer/releases) 或 GitHub Actions 的 `apps` 工作流下载：
+  - **macOS**：`nsprog-<版本>-macos-arm64.dmg`。打开后把 nsprog 拖进“应用程序”。没有 Apple 开发者签名时，第一次要**右键 → 打开**（或“系统设置 → 隐私与安全性 → 仍要打开”）；提示“已损坏”时执行 `xattr -dr com.apple.quarantine /Applications/nsprog.app`。双击打开网页界面，在设置页可以“退出程序”。命令行：`/Applications/nsprog.app/Contents/MacOS/nsprog info`。
+  - **Windows**：`nsprog-<版本>-windows-setup.exe`，装在当前用户目录下，不需要管理员权限；会建开始菜单和桌面快捷方式，可选“加入 PATH”，勾上后命令行直接用 `nsprog`。SmartScreen 拦截时点“更多信息 → 仍要运行”。
+  - **单文件**：`nsprog-macos-arm64`（先 `chmod +x`）、`nsprog-windows-x86_64.exe`、`nsprog-linux-x86_64`。双击打开网页界面，加参数就是命令行。
+  - 用 FT232H 时 macOS 还需要 `brew install libusb`。重复双击不会再开一个服务，只会重新打开浏览器页面。
 
 ## 2. 烧写 FPGA 固件（一次性）
 
@@ -42,7 +46,7 @@ nsprog info
 应该看到类似这样的输出：
 
 ```
-gateware 1.0, protocol 1, board 1, clock 27.0 MHz, rx fifo 4096, link UART, flags 00
+gateware 1.2, protocol 1, board 1, clock 27.0 MHz, rx fifo 4096, link UART, flags 00
 UART 3000000 baud
 parallel NAND: no chip (ID FFFFFFFFFFFFFFFF)
 SPI: no chip (ID FFFFFFFFFF)
@@ -54,15 +58,28 @@ SPI: no chip (ID FFFFFFFFFF)
 
 ## 4. 接线
 
-按 [wiring.md](wiring.md) 把 TSOP48 座、SOP8/WSON8/SOIC16 座（以及 FT232H）全部接好，并加上去耦电容。
+按 [wiring.md](wiring.md) 把 TSOP48 座、SOP8/WSON8/SOIC16 座（以及 FT232H）全部接好，并加上去耦电容。网页界面的**“接线”页**有每种封装的接线图和逐根打勾的清单（可以打印），每一行的“闪烁”按钮会让那根线以 2 Hz 翻转，用万用表或 LED 在座子上就能确认接对了没有。
 
-接完先**不放芯片**，运行：
+接完先**不放芯片**，运行自检：
 
 ```bash
-nsprog pins
+nsprog doctor
 ```
 
-`NAND IO[7:0]` 必须是 `11111111`，`R/B#` 必须是 high。
+```
+✓ 链路：UART，固件 1.2
+✓ 空闲电平：21 根线都停在各自的上拉/下拉电平
+✓ 对电源短路：每根线都能被拉高和拉低
+✓ 线间短路：没有两根线连在一起
+· 芯片：两个座子都没有识别到芯片
+结论：全部正常
+```
+
+`doctor` 会把 21 根 NAND/SPI 信号线逐根拉低、拉高，找出**对 GND/3V3 短路**、**两线相碰**（例如 TSOP48 相邻引脚连锡）和空闲电平异常，每条问题都给出 FPGA 脚号和座子脚号。它只驱动 3.3V 弱信号，但**座子里有芯片时建议加 `--no-drive`**（只读电平，不驱动）。
+
+- **断线**从 FPGA 一侧看不出来。用 `nsprog doctor --probe`：拿一根接 GND（或 3V3）的杜邦线，逐个碰座子引脚，终端会实时显示碰到的是哪根信号；碰了没反应就是断线或接错座子脚。
+- **单根线**：`nsprog pintest --pin CE# --mode toggle`（2 Hz 翻转 30 秒），`--mode low/high` 保持电平，`nsprog pintest --list` 列出可测的线。适合配合万用表或 LED 查线。
+- 旧的检查方法仍然可用：`nsprog pins` 显示 `NAND IO[7:0]` 必须是 `11111111`，`R/B#` 必须是 high。
 
 ## 5. 第一颗芯片：W29N02KV（TSOP48）
 
@@ -158,4 +175,8 @@ nsprog web
 | 写入报 `write protected` | WP#（TSOP48 19 脚 → FPGA 69 脚）没接好 |
 | SPI 识别成奇怪的大小 | 用 `--spi-mhz 1` 再试；检查 HOLD#（7 脚）是否为高电平 |
 | 校验失败 | 降低 SPI 频率；NAND 换 `--bb skip`；看是否 MLC 芯片（原始数据会有位翻转） |
+| `doctor` 报“线间短路” | 按提示的两个座子脚号查连锡、杜邦线相碰；TSOP48 相邻引脚最常见 |
+| `doctor` 报“对电源短路” | 那根线接到了 GND/3V3，或者座子里有芯片在驱动它（用 `--no-drive`） |
+| `doctor` 全绿但读不到芯片 | 断线查不出来：用 `nsprog doctor --probe` 在座子上逐脚碰一遍 |
+| macOS 提示“已损坏，无法打开” | `xattr -dr com.apple.quarantine /Applications/nsprog.app`，再右键 → 打开 |
 | LED5 常亮 | 通信出过错。运行一次 `nsprog info` 会清除；频繁出现说明链路不稳定 |

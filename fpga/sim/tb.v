@@ -36,6 +36,22 @@ module tb;
     pullup (nand_rb_n);
     pullup (spi_io1);
     pullup (ft_oe_n);
+    // FPGA-internal pulls from tangnano9k.cst (they matter while pins are released)
+    pullup (nand_we_n);
+    pullup (nand_re_n);
+    pullup (nand_ce_n);
+    pulldown (nand_cle);
+    pulldown (nand_ale);
+    pulldown (nand_wp_n);
+    pullup (spi_cs_n);
+    pulldown (spi_sck);
+    pullup (spi_io0);
+    pullup (spi_io2);
+    pullup (spi_io3);
+
+    // Wiring fault injection for the pin-test / doctor tests: short NAND IO2-IO3.
+    reg short_io23 = 1'b0;
+    tranif1 t_short (nand_io[2], nand_io[3], short_io23);
     genvar gi;
     generate
         for (gi = 0; gi < 8; gi = gi + 1) begin : pu
@@ -44,7 +60,11 @@ module tb;
         end
     endgenerate
 
+`ifdef GATE_SIM
+    top dut (                            // synthesised netlist: parameters already applied
+`else
     top #(.CLK_HZ(27_000_000)) dut (
+`endif
         .clk27(clk27), .btn_n(btn_n), .led_n(led_n),
         .uart_tx(uart_tx), .uart_rx(uart_rx),
         .nand_io(nand_io), .nand_cle(nand_cle), .nand_ale(nand_ale),
@@ -74,8 +94,10 @@ module tb;
     );
 `endif
 
-    // Bus contention checks on the FT232H data bus
+    // Bus contention checks on the FT232H data bus (RTL only: they look at
+    // internal nets that do not survive synthesis)
     integer ft_contention = 0;
+`ifndef GATE_SIM
     always @(negedge ft_rd_n)
         if (!dut.use_sync && dut.fta_d_oe) begin
             ft_contention = ft_contention + 1;
@@ -86,4 +108,5 @@ module tb;
             ft_contention = ft_contention + 1;
             $display("[tb] ERROR: FPGA drives ft_d while OE# is low");
         end
+`endif
 endmodule
