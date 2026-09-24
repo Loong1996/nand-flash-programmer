@@ -104,6 +104,44 @@ def test_nand_detect_onfi_and_db():
     assert det.nand.name == "K9F1G08U0E"
 
 
+
+W29N02KV_ID = bytes.fromhex("EFDA109506")
+
+
+def w29n02kv(onfi=True, blocks=2048):
+    return NandModel(page=2048, spare=128, ppb=64, blocks=blocks, ids=W29N02KV_ID, onfi=onfi,
+                     manufacturer="WINBOND", model="W29N02KVxxAF", ecc_bits=4)
+
+
+def test_w29n02kvsiaf_database_entry():
+    c = chipdb.find_nand(W29N02KV_ID + b"\x00")
+    assert c is not None and c.name == "W29N02KVSIAF" and c.source == "nsprog"
+    assert (c.page_size, c.spare_size, c.pages_per_block, c.blocks) == (2048, 128, 64, 2048)
+    assert c.total_size == 256 << 20 and (c.row_cycles, c.col_cycles) == (3, 2)
+    assert c.voltage == 3.3 and (c.ecc_bits, c.ecc_step) == (4, 512)
+    assert chipdb.nand_by_name("w29n02kvsiaf") is c
+    # the older W29N02GV (EF DA 90 95 04) must not match
+    assert chipdb.find_nand(bytes.fromhex("EFDA909504")) is None
+
+
+@pytest.mark.parametrize("onfi", [True, False])
+def test_w29n02kvsiaf_detect_and_roundtrip(onfi):
+    dev = make(w29n02kv(onfi=onfi, blocks=8))
+    det = detect(dev, want="nand")
+    drv = det.nand
+    assert drv is not None and drv.name == "W29N02KVSIAF"
+    assert drv.chip.source == ("nsprog+onfi" if onfi else "nsprog")
+    assert drv.raw_page == 2176 and drv.chip.ecc_bits == 4
+    assert any("4-bit ECC per 512 B" in m for m in det.messages)
+    assert any("not yet verified" in m for m in det.messages)
+    image = raw_image(drv, 3)
+    rep = jobs.write(drv, bytes(image), start=4, oob=True, bb="skip")
+    assert rep.ok, rep.summary()
+    out = io.BytesIO()
+    jobs.read(drv, out, start=4, count=3, oob=True, bb="skip")
+    assert out.getvalue() == bytes(image)
+    assert drv.bad_blocks([3])[3] and not drv.bad_blocks([4])[4]
+
 def test_nand_no_chip():
     dev = make(None, None)
     det = detect(dev)

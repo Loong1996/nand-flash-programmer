@@ -488,7 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nsprog", description="NAND / SPI flash programmer (Tang Nano 9K FPGA)")
     p.add_argument("--version", action="version", version="nsprog " + __version__)
     p.add_argument("-p", "--port", help="serial port, 'ft232h' (async FIFO), 'ft232h-sync' "
-                                        "(sync FIFO), 'ftdi://...', or 'emu[:nand|spinor|spinand]' "
+                                        "(sync FIFO), 'ftdi://...', or 'emu[:nand|spinor|spinand|w29n02kv]' "
                                         "(default: auto-detect)")
     p.add_argument("-v", "--verbose", action="count", default=0)
     p.add_argument("--no-fast-uart", action="store_true", help="stay at 115200 baud on the UART link")

@@ -1,0 +1,10 @@
+# Parallel NAND parts missing from the NANDO database (nando_parallel_chip_db.csv is kept unchanged).
+# Timings are not needed: the FPGA bus uses the safe/medium/fast profiles (ONFI timing modes pick 'auto').
+# ECC is the minimum host ECC the vendor requires (bits per ecc_step bytes); nsprog reads and writes raw pages.
+# verified = 1 once the entry has been checked on real hardware with nsprog.
+#
+# name, ID bytes (hex), page, spare, pages/block, blocks, row cycles, col cycles, bad-block mark offset, voltage, ecc bits, ecc step, verified, note
+#
+# W29N02KVxxAF (Winbond 2 Gbit 3.3V SLC, datasheet W29N02KVxxAF): 2048 blocks x 64 pages x (2048 + 128) bytes,
+# ID EF DA 10 95 06, ONFI, 4-bit ECC per 512 B (endurance spec: 4 bit / 544 B). Same ID for SIAF (TSOP48) and BIAF (VFBGA63).
+W29N02KVSIAF, EFDA109506, 2048, 128, 64, 2048, 3, 2, 0, 3.3, 4, 512, 0, Winbond 2Gb SLC; same ID as W29N02KVBIAF (BGA63)
