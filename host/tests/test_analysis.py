@@ -321,7 +321,8 @@ def test_web_analysis_tools(tmp_path, monkeypatch):
 
     j = run("fs_list", q, bytes(img))
     rows = j["report"]["extra"]["tables"][0]["rows"]
-    link = next(r[0]["href"] for r in rows if r[0]["text"] == "/usr/lib/text.txt" and r[3].startswith("SquashFS"))
+    link = next(r[0]["href"] for r in rows
+                if r[0]["text"] == "/usr/lib/text.txt" and r[3].startswith("SquashFS"))
     files, _links, _dirs = reference_tree()
     assert c.get(link).content == files["/usr/lib/text.txt"]
     assert c.get("/api/fs/file?i=9&path=/x").status_code == 404
