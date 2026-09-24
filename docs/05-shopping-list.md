@@ -56,8 +56,10 @@
 
 | # | 物品 | 数量 | 购买要点 | 大约价格 |
 |---|---|---|---|---|
-| F1 | **FT232H 模块**（如 CJMCU-FT232H） | 1 | **必须带 EEPROM**（板上有 93C46/93C56 等 8 脚小芯片）；引出 AD0–AD7、AC0–AC9 全部引脚；IO 电平 3.3 V | ¥30–60 |
+| F1 | **FT232H 模块**（如 CJMCU-FT232H；标题常写“USB 转 JTAG/UART/FIFO/SPI/I2C”） | 1 | 芯片丝印 **FT232HL 或 FT232HQ**；**必须带 EEPROM**（丝印 93C46/93C56/93LC56 之类的小芯片，可能是 8 脚 SOP8/MSOP8，也可能是 6 脚 SOT-23-6，常在板子**背面**；FIFO 模式要写进 EEPROM。不确定就直接问卖家“是否焊了 EEPROM”）；**AD0–AD7、AC0–AC6 全部引出**（同步 FIFO 要用 AC5 CLKOUT、AC6 OE#）；IO 电平 3.3 V | ¥30–60 |
 | F2 | FT232H 用的 USB 线 🆕 | 1 | 看模块接口（Mini-USB / Micro-USB / USB-C） | 手头有即可 |
+
+**不要买**：FT232RL / CH340 / CP2102（只有串口）、FT245R（全速、只有异步 FIFO）、CH341A / CH347（不是 FIFO 接口）、只引出几个脚的 FT232H 转 JTAG 小板。FT2232H 虽然也支持 FIFO，但接线表是按 FT232H 写的，建议就买 FT232H。
 
 没有 FT232H 也能用：板载串口约 290 KB/s，有了 FT232H 约 2 MB/s。速度分析见 [03-fpga-design.md](03-fpga-design.md) 第 4 节。
 附加用途：FT232H 单独配合 `flashrom -p ft2232_spi:type=232H` 也能读写 SPI NOR。

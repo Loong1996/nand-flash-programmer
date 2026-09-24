@@ -65,7 +65,7 @@ python fpga/sim/run_sim.py          # RTL 端到端测试（SPI NOR 与 SPI NAND
 
 ## 6. 以后可以做的
 
-- FT232H **同步** FIFO（60 MHz，约 35 MB/s）：需要 FT232H 的 CLKOUT 接到全局时钟脚（例如 35 脚 GCLKT_4），链路模块要重写。
+- FT232H **同步** FIFO（60 MHz，约 35 MB/s）：接线已经就绪（CLKOUT→35 脚 GCLKT_4，OE#→37，SIWU#→36，WR#→38），只需新增 60 MHz 时钟域的链路模块，外加 PLL 提频和 NAND 连续读，不用改线。
 - Quad SPI 读取。
 - 1.8V 支持：电平转换转接板，或者正式 PCB 上给 NAND/SPI 所在 bank 单独做可调 VCCIO。
 - 16 位 NAND、多 CE 芯片。

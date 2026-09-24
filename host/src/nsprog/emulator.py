@@ -569,7 +569,7 @@ class Engine:
             self.out.append(P.BAUD_ACK)
         elif op == P.GET_PINS:
             rb = self.nand.ready(self.now) if self.nand else True
-            self.out += bytes([int(rb) | 2, 0xFF])
+            self.out += bytes([int(rb) | 2 | 0x30, 0xFF])
         elif op == P.NAND_CE:
             self.ce = bool(f[1] & 1)
         elif op == P.NAND_CMD:

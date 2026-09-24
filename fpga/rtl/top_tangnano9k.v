@@ -3,6 +3,10 @@
 // Host links: on-board BL702 USB-UART (always available) and an optional
 // FT232H in 245 asynchronous FIFO mode. The engine answers on whichever link
 // delivered the most recent command byte.
+//
+// The FT232H wiring is already complete for 245 *synchronous* FIFO mode
+// (CLKOUT on global clock pin 35, OE#, SIWU#); this gateware only watches
+// those three pins, so a later sync-FIFO build needs no rewiring.
 
 module top #(
     parameter CLK_HZ = 27_000_000,
@@ -35,7 +39,10 @@ module top #(
     input  wire       ft_rxf_n,
     input  wire       ft_txe_n,
     output wire       ft_rd_n,
-    output wire       ft_wr_n
+    output wire       ft_wr_n,
+    input  wire       ft_clkout,   // AC5, reserved for sync FIFO (input only here)
+    input  wire       ft_oe_n,     // AC6, reserved for sync FIFO (input only here)
+    input  wire       ft_siwu_n    // AC4, reserved (input only here)
 );
     localparam [15:0] BAUD_DIV = (CLK_HZ + BAUD / 2) / BAUD;
 
@@ -57,6 +64,23 @@ module top #(
         .d({uart_rx, ft_rxf_n, ft_txe_n, nand_rb_n}),
         .q({uart_rx_s, rxf_n_s, txe_n_s, rb_s})
     );
+
+    // FT232H sync-FIFO pins: diagnostics only. CLKOUT counts as active when
+    // it toggled within the last ~2.4 ms (FT232H in sync FIFO mode).
+    wire [2:0] ftx_s;
+    sync2 #(.W(3)) u_ftx (.clk(clk), .d({ft_clkout, ft_siwu_n, ft_oe_n}), .q(ftx_s));
+    reg        clk_prev;
+    reg [15:0] clk_idle;
+    always @(posedge clk) begin
+        clk_prev <= ftx_s[2];
+        if (rst)
+            clk_idle <= 16'hFFFF;
+        else if (ftx_s[2] != clk_prev)
+            clk_idle <= 16'd0;
+        else if (clk_idle != 16'hFFFF)
+            clk_idle <= clk_idle + 1'b1;
+    end
+    wire [2:0] ft_status = {clk_idle != 16'hFFFF, ftx_s[1], ftx_s[0]};
 
     // ------------------------------------------------------------ FIFOs
     localparam RX_AW = 12, TX_AW = 12;
@@ -159,7 +183,8 @@ module top #(
         .nand_io_i(nand_io), .nand_rb(rb_s), .nand_park(e_nand_park),
         .spi_cs_act(e_cs), .spi_sck(e_sck), .spi_mosi(e_mosi), .spi_miso(spi_io1),
         .spi_io2_hi(e_io2_hi), .spi_io3_hi(e_io3_hi), .spi_park(e_spi_park),
-        .baud_div(baud_div), .active_port(active_port), .rx_overflow(rx_overflow),
+        .baud_div(baud_div), .active_port(active_port), .ft_status(ft_status),
+        .rx_overflow(rx_overflow),
         .nand_activity(nand_act), .spi_activity(spi_act), .err_led(err)
     );
 

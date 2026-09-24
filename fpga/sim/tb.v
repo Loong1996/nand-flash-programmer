@@ -45,7 +45,8 @@ module tb;
         .spi_cs_n(spi_cs_n), .spi_sck(spi_sck), .spi_io0(spi_io0), .spi_io1(spi_io1),
         .spi_io2(spi_io2), .spi_io3(spi_io3),
         .ft_d(ft_d), .ft_rxf_n(ft_rxf_n), .ft_txe_n(ft_txe_n),
-        .ft_rd_n(ft_rd_n), .ft_wr_n(ft_wr_n)
+        .ft_rd_n(ft_rd_n), .ft_wr_n(ft_wr_n),
+        .ft_clkout(1'b0), .ft_oe_n(1'b1), .ft_siwu_n(1'b1)
     );
 
     nand_model u_nand (

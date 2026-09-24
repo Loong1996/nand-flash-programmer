@@ -61,6 +61,7 @@ async def ft_info_echo(dut):
         dev.run(b)
         assert [r.value for r in rs] == list(range(64))
         assert pins.value.rb_ready
+        assert pins.value.ft_oe_n and pins.value.ft_siwu_n and not pins.value.ft_clkout_active
     await bridge(host)()
     assert ft.errors == 0
 

@@ -25,7 +25,7 @@
 | `03` | SET_REG | `reg`, `value:u16` | — |
 | `04` | DELAY_US | `us:u16` | — |
 | `05` | SET_BAUD | `div:u16`（每位时钟数 = 27e6/波特率） | `55`（以旧波特率发出），随后切换 |
-| `06` | GET_PINS | — | 2 字节：`flags`（bit0 R/B#，bit1 SPI DO，bit2 当前链路 1=FT，bit3 波特率待确认），`nand_io`（NAND 数据总线当前电平） |
+| `06` | GET_PINS | — | 2 字节：`flags`（bit0 R/B#，bit1 SPI DO，bit2 当前链路 1=FT，bit3 波特率待确认，bit4 FT232H OE# 电平，bit5 SIWU# 电平，bit6 FT232H CLKOUT 在翻转），`nand_io`（NAND 数据总线当前电平） |
 | `10` | NAND_CE | `on`（1=CE# 拉低） | — |
 | `11` | NAND_CMD | `c` | — |
 | `12` | NAND_ADDR | `n`(1–8), `a[n]` | — |

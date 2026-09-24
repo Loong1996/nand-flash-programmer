@@ -101,5 +101,12 @@ IO_LOC  "ft_txe_n" 34;    // ACBUS1
 IO_PORT "ft_txe_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "ft_rd_n" 40;     // ACBUS2
 IO_PORT "ft_rd_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC  "ft_wr_n" 35;     // ACBUS3
+IO_LOC  "ft_wr_n" 38;     // ACBUS3
 IO_PORT "ft_wr_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+// Reserved for 245 synchronous FIFO mode (inputs only in this build)
+IO_LOC  "ft_clkout" 35;   // ACBUS5 CLKOUT -> global clock pin GCLKT_4
+IO_PORT "ft_clkout" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "ft_siwu_n" 36;   // ACBUS4 SIWU# (also 10k pull-up to 3V3)
+IO_PORT "ft_siwu_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "ft_oe_n" 37;     // ACBUS6 OE#
+IO_PORT "ft_oe_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;

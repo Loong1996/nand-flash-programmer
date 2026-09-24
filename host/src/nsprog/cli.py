@@ -145,6 +145,10 @@ def cmd_pins(args):
     print("NAND IO[7:0]   : %s (%02X) - with no chip inserted all bits should read 1"
           % (format(p.nand_io, "08b"), p.nand_io))
     print("SPI DO (IO1)   : %s" % ("high" if p.spi_do else "low"))
+    print("FT232H CLKOUT  : %s" % ("toggling (sync FIFO mode)" if p.ft_clkout_active else
+                                   "idle (async FIFO mode or not connected - normal)"))
+    print("FT232H OE#/SIWU#: %s / %s (both should be high)" % (
+        "high" if p.ft_oe_n else "LOW", "high" if p.ft_siwu_n else "LOW"))
     dev.close()
     return 0
 

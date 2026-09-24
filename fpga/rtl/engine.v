@@ -46,6 +46,7 @@ module engine #(
     // misc
     output reg  [15:0] baud_div,
     input  wire        active_port,    // 0 = UART, 1 = FT245
+    input  wire [2:0]  ft_status,      // {CLKOUT active, SIWU# level, OE# level}
     input  wire        rx_overflow,    // pulse
     output wire        nand_activity,
     output wire        spi_activity,
@@ -390,7 +391,7 @@ module engine #(
                             st      <= S_PUSH;
                         end
                         OP_GET_PINS: begin
-                            tx_data <= {4'd0, baud_pending, active_port, spi_miso, nand_rb};
+                            tx_data <= {1'b0, ft_status, baud_pending, active_port, spi_miso, nand_rb};
                             ret     <= S_PINS2;
                             st      <= S_PUSH;
                         end

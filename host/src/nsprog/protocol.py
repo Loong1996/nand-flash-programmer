@@ -135,11 +135,15 @@ class Pins:
     port_ft: bool
     baud_pending: bool
     nand_io: int
+    ft_oe_n: bool = True
+    ft_siwu_n: bool = True
+    ft_clkout_active: bool = False
 
     @classmethod
     def parse(cls, raw: bytes) -> "Pins":
         f = raw[0]
-        return cls(bool(f & 1), bool(f & 2), bool(f & 4), bool(f & 8), raw[1])
+        return cls(bool(f & 1), bool(f & 2), bool(f & 4), bool(f & 8), raw[1],
+                   bool(f & 0x10), bool(f & 0x20), bool(f & 0x40))
 
 
 def _u16(v: int) -> bytes:
