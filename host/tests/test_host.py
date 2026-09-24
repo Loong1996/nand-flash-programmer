@@ -244,3 +244,20 @@ def test_spinand_flow():
     assert out.getvalue() == image
     assert jobs.erase(drv).ok
     assert jobs.blank_check(drv).ok
+
+
+def test_db_name_with_onfi_geometry():
+    # ID of K9F2G08U0C (NANDO DB: 2048+64) but the chip's ONFI page says 2048+128.
+    dev = make(NandModel(ids=bytes([0xEC, 0xDA, 0x10, 0x95, 0x44]), spare=128, blocks=16))
+    det = detect(dev, want="nand")
+    assert det.nand.name == "K9F2G08U0C" and det.nand.spare_size == 128
+    assert any("geometry taken from ONFI" in m for m in det.messages)
+
+
+def test_spinand_linux_table_matching():
+    assert chipdb.find_spi_nand(bytes.fromhex("FFEFAA2100"), bytes.fromhex("EFAA21")).name == "W25N01GV"
+    # GigaDevice "opcode_addr" parts answer after 9Fh 00h
+    assert chipdb.find_spi_nand(b"\xff\xff\xff", bytes.fromhex("C8D1C8")).name == "GD5F1GQ4UExxG"
+    # ESMT F50L1G41LB is C8 01 7F 7F 7F per the Linux table
+    assert chipdb.find_spi_nand(b"\xff" * 5, bytes.fromhex("C8017F7F7F")).name == "F50L1G41LB"
+    assert chipdb.guess_voltage("Winbond W29N02KVxxAF") == 3.3

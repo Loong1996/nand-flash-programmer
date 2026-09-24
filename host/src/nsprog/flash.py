@@ -290,7 +290,7 @@ def nand_chip_from_onfi(p: OnfiParams, id_bytes: bytes) -> chipdb.NandChip:
         name=name, page_size=p.page_size, block_size=p.page_size * p.pages_per_block,
         total_size=p.page_size * p.pages_per_block * p.blocks, spare_size=p.spare_size,
         bb_mark_off=0, row_cycles=p.row_cycles, col_cycles=p.col_cycles,
-        ids=tuple(id_bytes[:5]), voltage=0.0, source="onfi")
+        ids=tuple(id_bytes[:5]), voltage=chipdb.guess_voltage(name), source="onfi")
     return chip
 
 
@@ -713,13 +713,28 @@ def detect_nand(dev: Device, chip_name: Optional[str] = None, use_rb: bool = Tru
         return None
     onfi = ParallelNand.read_onfi(dev)
     chip = chipdb.find_nand(idb)
+    if onfi is not None:
+        # The parameter page comes from the chip itself: trust its geometry.
+        ochip = nand_chip_from_onfi(onfi, idb)
+        if chip is not None:
+            import dataclasses
+
+            same = (chip.page_size, chip.spare_size, chip.block_size, chip.total_size) == \
+                   (ochip.page_size, ochip.spare_size, ochip.block_size, ochip.total_size)
+            ochip = dataclasses.replace(ochip, name=chip.name, voltage=chip.voltage,
+                                        bb_mark_off=chip.bb_mark_off, source="nando+onfi")
+            det.messages.append("parallel NAND: %s (database + ONFI%s, ID %s)" % (
+                chip.name, "" if same else "; geometry taken from ONFI",
+                idb[:5].hex().upper()))
+        else:
+            det.messages.append("parallel NAND: %s (ONFI parameter page, ID %s)"
+                                % (ochip.name, idb[:5].hex().upper()))
+        if not ochip.voltage:
+            det.messages.append("note: supply voltage unknown - check the datasheet "
+                                "(this programmer is 3.3V only)")
+        return ParallelNand(dev, ochip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
     if chip is not None:
         det.messages.append("parallel NAND: %s (database, ID %s)" % (chip.name, idb[:5].hex().upper()))
-        return ParallelNand(dev, chip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
-    if onfi is not None:
-        chip = nand_chip_from_onfi(onfi, idb)
-        det.messages.append("parallel NAND: %s (ONFI parameter page, ID %s)"
-                            % (chip.name, idb[:5].hex().upper()))
         return ParallelNand(dev, chip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
     det.messages.append("parallel NAND: unknown chip ID %s (not in database, no ONFI); "
                         "use --chip to choose a database entry" % idb[:5].hex().upper())
@@ -764,16 +779,18 @@ def detect_spi(dev: Device, chip_name: Optional[str] = None, ecc: bool = False,
     nor = chipdb.find_spi_nor(jedec)
     sfdp = SpiNor.probe_sfdp(dev)
     if nor is None:
-        nand = None
-        for cand in chipdb.spi_nand_chips():
-            if (nand_id.value[:len(cand.ids)] == cand.ids or jedec[:len(cand.ids)] == cand.ids
-                    or jedec[1:1 + len(cand.ids)] == cand.ids):
-                if nand is None or len(cand.ids) > len(nand.ids):
-                    nand = cand
+        nand = chipdb.find_spi_nand(jedec, nand_id.value)
         if nand is not None and sfdp is None:
-            det.messages.append("SPI NAND: %s (ID %s)" % (nand.name, nand.ids.hex().upper()))
+            det.messages.append("SPI NAND: %s (%s, ID %s)" % (
+                nand.name, "Linux kernel table" if nand.source == "linux" else "database",
+                nand.ids.hex().upper()))
             if not nand.verified:
                 det.messages.append("note: %s is an unverified database entry" % nand.name)
+            if nand.note:
+                det.messages.append("note: %s" % nand.note)
+            if not nand.voltage:
+                det.messages.append("note: supply voltage of %s unknown - check the datasheet "
+                                    "(this programmer is 3.3V only)" % nand.name)
             d = SpiNand(dev, nand, ecc=ecc)
             d.setup()
             return d

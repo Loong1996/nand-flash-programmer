@@ -1,5 +1,6 @@
 # name, ID bytes after 9Fh (hex), page, spare, pages/block, blocks, plane select (col bit12), read-from-cache dummy before column, voltage, verified
-# "verified" = geometry and ID checked against the datasheet by the project; others are from memory, report problems.
+# Extras not (yet) in the Linux kernel table (spi_nand_linux.csv takes precedence for matching IDs).
+# "verified" = checked against the datasheet; others are from memory, report problems.
 W25N512GV, EFAA20, 2048, 64, 64, 512, 0, 0, 3.3, 0
 W25N01GV, EFAA21, 2048, 64, 64, 1024, 0, 0, 3.3, 1
 W25N01GW, EFBA21, 2048, 64, 64, 1024, 0, 0, 1.8, 0
@@ -8,7 +9,6 @@ GD5F1GQ4UA, C8F1, 2048, 64, 64, 1024, 0, 1, 3.3, 0
 GD5F1GQ4UB, C8D1, 2048, 128, 64, 1024, 0, 0, 3.3, 0
 GD5F2GQ4UB, C8D2, 2048, 128, 64, 2048, 0, 0, 3.3, 0
 GD5F1GQ5UE, C851, 2048, 128, 64, 1024, 0, 0, 3.3, 0
-F50L1G41LB, C801, 2048, 64, 64, 1024, 0, 0, 3.3, 0
 MX35LF1GE4AB, C212, 2048, 64, 64, 1024, 0, 0, 3.3, 0
 MX35LF2GE4AB, C222, 2048, 64, 64, 2048, 1, 0, 3.3, 0
 MT29F1G01ABAFD, 2C14, 2048, 128, 64, 1024, 0, 0, 3.3, 0

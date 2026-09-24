@@ -281,6 +281,91 @@ def cmd_ft232h_setup(args):
     return 0
 
 
+# ----------------------------------------------------------------- offline tools
+def _geometry(args):
+    from .image import Geometry
+
+    if getattr(args, "chip", None):
+        g = Geometry.from_chip(args.chip)
+        if args.ppb:
+            g.ppb = args.ppb
+        return g
+    if not args.page:
+        raise SystemExit("give --chip NAME or --page/--oob (and --ppb)")
+    return Geometry(args.page, args.oob or 0, args.ppb or 64)
+
+
+def _ecc_layout(args):
+    from .ecc import layout
+
+    return layout(args.ecc, args.ecc_offset)
+
+
+def cmd_image(args):
+    from . import image
+
+    geo = _geometry(args)
+    if args.action == "info":
+        with open(args.src, "rb") as f:
+            print(image.info(f, geo, raw=not args.main, bb_off=args.bb_off).summary())
+        return 0
+    if args.action == "strip":
+        with open(args.src, "rb") as f, open(args.dst, "wb") as out:
+            n = image.strip_oob(f, out, geo, skip_bad=args.skip_bad, bb_off=args.bb_off)
+        print("wrote %d pages (main area only) to %s" % (n, args.dst))
+        return 0
+    if args.action == "split":
+        with open(args.src, "rb") as f, open(args.dst, "wb") as m, open(args.oob_file, "wb") as o:
+            n = image.split(f, m, o, geo)
+        print("split %d pages -> %s + %s" % (n, args.dst, args.oob_file))
+        return 0
+    if args.action == "merge":
+        lay = _ecc_layout(args) if args.ecc else None
+        with open(args.src, "rb") as m, open(args.dst, "wb") as out:
+            o = open(args.oob_file, "rb") if args.oob_file else None
+            try:
+                n = image.merge(m, o, out, geo, lay)
+            finally:
+                if o:
+                    o.close()
+        print("built %d raw pages%s -> %s" % (n, (" with %s ECC" % lay.describe()) if lay else "",
+                                                args.dst))
+        return 0
+    raise SystemExit("unknown action")
+
+
+def cmd_ecc(args):
+    from . import image
+
+    geo = _geometry(args)
+    lay = _ecc_layout(args)
+    print("layout: %s, ECC at OOB offset %s" % (lay.describe(),
+          "end" if lay.ecc_offset is None else lay.ecc_offset))
+    out = open(args.dst, "wb") if args.action == "fix" else None
+    try:
+        with open(args.src, "rb") as f:
+            rep = image.ecc_check(f, geo, lay, out, strip=args.strip)
+    finally:
+        if out:
+            out.close()
+    print(rep.summary())
+    if out:
+        print("corrected image written to %s" % args.dst)
+    return 0 if rep.ok else 1
+
+
+def cmd_ubi(args):
+    from . import ubi
+
+    with open(args.src, "rb") as f:
+        img = ubi.parse(f, args.peb)
+        print(img.summary())
+        if args.action == "extract":
+            for path in ubi.extract(f, img, args.outdir):
+                print("  %s  (%s)" % (path, ubi.detect_content(path)))
+    return 0
+
+
 def cmd_selftest(args):
     """Link stress test: echo patterns and a large loop of NOPs."""
     import random
@@ -397,6 +482,71 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_ft232h_setup)
 
+    def geo_opts(sp):
+        sp.add_argument("-c", "--chip", help="take page/OOB/pages-per-block from a chip database entry")
+        sp.add_argument("--page", type=int, help="page size (main area)")
+        sp.add_argument("--oob", type=int, help="spare (OOB) size per page")
+        sp.add_argument("--ppb", type=int, help="pages per block (default 64)")
+        sp.add_argument("--bb-off", type=int, default=0, help="bad-block marker offset in the OOB")
+
+    def ecc_opts(sp, required=True):
+        sp.add_argument("--ecc", required=required,
+                        help="hamming256 | hamming512 | bch4 | bch8 | bch16 | bch:<t>:<step> | hamming:<step>")
+        sp.add_argument("--ecc-offset", type=int,
+                        help="ECC start inside the OOB (default: packed at the end, Linux layout)")
+
+    sp = sub.add_parser("image", help="offline image tools (info / strip / split / merge)")
+    isub = sp.add_subparsers(dest="action", required=True)
+    x = isub.add_parser("info", help="page / block / bad-block / content summary")
+    x.add_argument("src")
+    x.add_argument("--main", action="store_true", help="image has no OOB")
+    geo_opts(x)
+    x = isub.add_parser("strip", help="raw (page+OOB) -> main area only")
+    x.add_argument("src")
+    x.add_argument("dst")
+    x.add_argument("--skip-bad", action="store_true", help="drop blocks that carry a bad-block marker")
+    geo_opts(x)
+    x = isub.add_parser("split", help="raw -> main file + OOB file")
+    x.add_argument("src")
+    x.add_argument("dst")
+    x.add_argument("oob_file")
+    geo_opts(x)
+    x = isub.add_parser("merge", help="main (+ OOB file) -> raw, optionally computing ECC")
+    x.add_argument("src")
+    x.add_argument("dst")
+    x.add_argument("--oob-file")
+    geo_opts(x)
+    ecc_opts(x, required=False)
+    for x in isub.choices.values():
+        x.set_defaults(func=cmd_image)
+
+    sp = sub.add_parser("ecc", help="check / correct ECC in a raw image")
+    esub = sp.add_subparsers(dest="action", required=True)
+    x = esub.add_parser("check", help="count clean / corrected / uncorrectable ECC steps")
+    x.add_argument("src")
+    geo_opts(x)
+    ecc_opts(x)
+    x.set_defaults(func=cmd_ecc, dst=None, strip=False)
+    x = esub.add_parser("fix", help="write a corrected image")
+    x.add_argument("src")
+    x.add_argument("dst")
+    x.add_argument("--strip", action="store_true", help="write the main area only")
+    geo_opts(x)
+    ecc_opts(x)
+    x.set_defaults(func=cmd_ecc)
+
+    sp = sub.add_parser("ubi", help="inspect / extract UBI images (main-area images)")
+    usub = sp.add_subparsers(dest="action", required=True)
+    x = usub.add_parser("info")
+    x.add_argument("src")
+    x.add_argument("--peb", type=int, help="physical eraseblock size (default: auto)")
+    x.set_defaults(func=cmd_ubi)
+    x = usub.add_parser("extract")
+    x.add_argument("src")
+    x.add_argument("outdir")
+    x.add_argument("--peb", type=int)
+    x.set_defaults(func=cmd_ubi)
+
     sp = sub.add_parser("selftest", help="link stress test")
     sp.add_argument("--rounds", type=int, default=20)
     sp.set_defaults(func=cmd_selftest)
@@ -412,7 +562,7 @@ def main(argv=None) -> int:
         logging.getLogger("nsprog").setLevel(logging.INFO if args.verbose == 1 else logging.DEBUG)
     try:
         return args.func(args) or 0
-    except (FlashError, jobs.Cancelled, OSError) as e:
+    except (FlashError, jobs.Cancelled, OSError, ValueError) as e:
         print("error: %s" % e, file=sys.stderr)
         return 2
     except KeyboardInterrupt:
