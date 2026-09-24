@@ -31,6 +31,15 @@ SPI_WRITE = 0x21
 SPI_READ = 0x22
 SPI_XFER = 0x23
 SPI_POLL = 0x24
+SPI_READ4 = 0x25          # quad-input read (data phase of 6Bh), gateware >= 1.1
+
+# INFO capability bits
+CAP_NAND8 = 0x01
+CAP_SPI = 0x02
+CAP_FT245 = 0x08
+CAP_UART = 0x10
+CAP_QSPI = 0x20           # SPI_READ4
+CAP_SYNC245 = 0x40        # FT232H 245 synchronous FIFO
 
 # Registers
 REG_T_SETUP = 0
@@ -237,6 +246,11 @@ class Batch:
 
     def spi_read(self, n: int) -> Result:
         return self._read_op(SPI_READ, n)
+
+    def spi_read4(self, n: int) -> Result:
+        """Read ``n`` bytes on IO0-IO3 (4 bits per clock). IO0/IO2/IO3 stay
+        released until the following ``spi_cs(False)``."""
+        return self._read_op(SPI_READ4, n)
 
     def spi_xfer(self, data: bytes) -> Result:
         data = bytes(data)

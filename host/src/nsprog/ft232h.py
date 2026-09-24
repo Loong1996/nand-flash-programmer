@@ -30,6 +30,13 @@ def setup_eeprom(url=None, custom_pid=False, dry_run=False) -> None:
             ee.initialize()
         ee.set_property("channel_a_type", "FIFO")
         ee.set_property("channel_a_driver", "D2XX")
+        # AC5 (CLKOUT) and AC6 (OE#) must not carry a CBUS clock/LED function in
+        # async mode: the FPGA would take a toggling AC5 for sync FIFO mode.
+        for pin in (5, 6):
+            try:
+                ee.set_property("cbus_func_%d" % pin, "TRISTATE")
+            except (ValueError, KeyError) as e:   # pragma: no cover - old pyftdi
+                print("note: could not set CBUS%d: %s" % (pin, e))
         if custom_pid:
             ee.set_property("product_id", CUSTOM_PID)
         ee.set_product_name("nsprog FT232H")

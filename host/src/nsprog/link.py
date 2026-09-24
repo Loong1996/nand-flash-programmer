@@ -109,28 +109,40 @@ FT232H_IDS = [(0x0403, 0x6014), (0x0403, CUSTOM_PID)]
 
 
 class FtdiLink(Link):
-    """FT232H in 245 asynchronous FIFO mode (EEPROM channel type = FIFO)."""
+    """FT232H FIFO link (EEPROM channel type = 245 FIFO).
+
+    ``sync=False``: 245 asynchronous FIFO (~2 MB/s).
+    ``sync=True``: 245 synchronous FIFO: the FT232H drives a 60 MHz CLKOUT
+    and the gateware (>= 1.1) switches to its sync bridge (~10+ MB/s).
+    """
 
     flow_controlled = True
-    bytes_per_sec = 2_000_000
 
-    def __init__(self, url: Optional[str] = None):
+    def __init__(self, url: Optional[str] = None, sync: bool = False):
         from pyftdi.ftdi import Ftdi
 
         self._ftdi = Ftdi()
         url = url or find_ft232h_url()
         if url is None:
             raise LinkError("no FT232H found")
-        self.name = url
+        self.name = url + ("+sync" if sync else "")
+        self.sync = sync
+        self.bytes_per_sec = 20_000_000 if sync else 2_000_000
         self._ftdi.open_from_url(url)
         self._ftdi.set_bitmode(0, Ftdi.BitMode.RESET)   # EEPROM FIFO mode = async 245
-        self._ftdi.set_latency_timer(1)
+        if sync:
+            self._ftdi.set_bitmode(0xFF, Ftdi.BitMode.SYNCFF)
+            self._ftdi.read_data_set_chunksize(0x10000)
+            self._ftdi.write_data_set_chunksize(0x10000)
+            time.sleep(0.02)                            # FPGA: detect CLKOUT, switch bridges
+        self._ftdi.set_latency_timer(1 if not sync else 2)
         self._ftdi.purge_buffers()
 
     def write(self, data: bytes) -> None:
         view = memoryview(data)
+        step = 0x10000 if self.sync else 4096
         while view:
-            n = self._ftdi.write_data(view[:4096])
+            n = self._ftdi.write_data(view[:step])
             view = view[n:]
 
     def read(self, n: int, timeout: float) -> bytes:
@@ -147,6 +159,13 @@ class FtdiLink(Link):
         return bytes(buf)
 
     def close(self) -> None:
+        if self.sync:
+            try:           # stop CLKOUT so the FPGA falls back to its async bridge
+                from pyftdi.ftdi import Ftdi
+
+                self._ftdi.set_bitmode(0, Ftdi.BitMode.RESET)
+            except Exception:  # pragma: no cover - hardware path
+                pass
         self._ftdi.close()
 
 

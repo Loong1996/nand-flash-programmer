@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "host", "src"))
 from nsprog.device import Device  # noqa: E402
 from nsprog.link import Link  # noqa: E402
 
-__all__ = ["FtModel", "UartModel", "SimFtLink", "SimUartLink", "SimDevice", "bridge",
-           "start"]
+__all__ = ["FtModel", "FtSyncModel", "UartModel", "SimFtLink", "SimUartLink", "SimDevice",
+           "bridge", "start"]
 
 #: 1 s of host timeout = this many ns of simulated time
 TIMEOUT_SCALE_NS = 1_000_000
@@ -29,6 +29,7 @@ async def start(dut, cycles=400):
     dut.ft_rxf_n.value = 1
     dut.ft_txe_n.value = 1
     dut.ft_d_host_oe.value = 0
+    dut.ft_clk_en.value = 0
     dut.uart_rx.value = 1
     dut.btn_n.value = 0b10
     for _ in range(20):
@@ -92,6 +93,90 @@ class FtModel:
             else:
                 await Timer(50, "ns")
             d.ft_txe_n.value = 0
+
+
+class FtSyncModel:
+    """FT232H in 245 synchronous FIFO mode: 60 MHz CLKOUT, OE#-controlled bus.
+
+    FPGA outputs are sampled at the falling edge of CLKOUT (they change only
+    on rising edges), acted upon at the next rising edge, and the FT232H
+    outputs change 4 ns after the rising edge (datasheet: 1-7.15 ns).
+    ``stall_every``/``stall_cycles`` hold TXE# high now and then (host not
+    reading); ``rx_gap_every`` makes RXF# go high briefly (USB packet gaps).
+    """
+
+    def __init__(self, dut, stall_every=0, stall_cycles=200, rx_gap_every=0):
+        self.dut = dut
+        self.rxq = collections.deque()     # host -> FPGA
+        self.txq = bytearray()             # FPGA -> host
+        self.stall_every = stall_every
+        self.stall_cycles = stall_cycles
+        self.rx_gap_every = rx_gap_every
+        self.errors = 0
+        self.oe_prev = 1
+        dut.ft_rxf_n.value = 1
+        dut.ft_txe_n.value = 0
+        dut.ft_d_host_oe.value = 0
+        dut.ft_clk_en.value = 1
+        cocotb.start_soon(self._run())
+
+    def _err(self, msg):
+        self.errors += 1
+        self.dut._log.error("FT sync: %s", msg)
+
+    async def _run(self):
+        d = self.dut
+        txe_n, rxf_n, stall, n_tx, n_rx, gap, last_gap = 0, 1, 0, 0, 0, 0, 0
+        await RisingEdge(d.ft_clkout)
+        while True:
+            await FallingEdge(d.ft_clkout)
+            oe_n = int(d.ft_oe_n.value) if d.ft_oe_n.value.is_resolvable else 1
+            rd_n = int(d.ft_rd_n.value)
+            wr_n = int(d.ft_wr_n.value)
+            dv = d.ft_d.value
+            await RisingEdge(d.ft_clkout)
+            # ---- transfers at this edge (FT232H outputs still hold their old values)
+            if not rd_n and not rxf_n:
+                if oe_n:
+                    self._err("RD# low while OE# high")
+                elif self.oe_prev:
+                    self._err("RD# low in the first cycle of OE# low")
+                else:
+                    self.rxq.popleft()
+                    n_rx += 1
+            if not wr_n and not txe_n:
+                if not oe_n:
+                    self._err("WR# low while OE# low")
+                elif not dv.is_resolvable:
+                    self._err("WR# low with undriven data")
+                else:
+                    self.txq.append(int(dv))
+                    n_tx += 1
+                    if self.stall_every and n_tx % self.stall_every == 0:
+                        stall = self.stall_cycles
+            self.oe_prev = oe_n
+            # ---- new FT232H output values
+            await Timer(4, "ns")
+            if stall:
+                stall -= 1
+                txe_n = 1
+            else:
+                txe_n = 0
+            if gap:
+                gap -= 1
+                rxf_n = 1
+            elif (self.rx_gap_every and n_rx and n_rx % self.rx_gap_every == 0
+                  and n_rx != last_gap):
+                gap, rxf_n, last_gap = 3, 1, n_rx
+            else:
+                rxf_n = 0 if self.rxq else 1
+            d.ft_txe_n.value = txe_n
+            d.ft_rxf_n.value = rxf_n
+            if not oe_n and self.rxq:
+                d.ft_d_host.value = self.rxq[0]
+                d.ft_d_host_oe.value = 1
+            else:
+                d.ft_d_host_oe.value = 0
 
 
 class UartModel:

@@ -1,12 +1,13 @@
 // Top level for Sipeed Tang Nano 9K (GW1NR-9, 27 MHz crystal).
 //
 // Host links: on-board BL702 USB-UART (always available) and an optional
-// FT232H in 245 asynchronous FIFO mode. The engine answers on whichever link
-// delivered the most recent command byte.
+// FT232H. The engine answers on whichever link delivered the most recent
+// command byte.
 //
-// The FT232H wiring is already complete for 245 *synchronous* FIFO mode
-// (CLKOUT on global clock pin 35, OE#, SIWU#); this gateware only watches
-// those three pins, so a later sync-FIFO build needs no rewiring.
+// The FT232H runs in 245 asynchronous FIFO mode, or in 245 *synchronous* FIFO
+// mode when the host selects it: the FT232H then outputs a 60 MHz CLKOUT (on
+// global clock pin 36) and this design switches to the ft245_sync bridge in
+// that clock domain, driving OE# itself. Without CLKOUT, OE# is left floating.
 
 module top #(
     parameter CLK_HZ = 27_000_000,
@@ -30,19 +31,19 @@ module top #(
 
     output wire       spi_cs_n,
     output wire       spi_sck,
-    output wire       spi_io0,     // MOSI / DI
-    input  wire       spi_io1,     // MISO / DO
-    output wire       spi_io2,     // WP#
-    output wire       spi_io3,     // HOLD# / RESET#
+    inout  wire       spi_io0,     // MOSI / DI  (IO0 in quad mode)
+    input  wire       spi_io1,     // MISO / DO  (IO1)
+    inout  wire       spi_io2,     // WP#        (IO2)
+    inout  wire       spi_io3,     // HOLD#      (IO3)
 
     inout  wire [7:0] ft_d,
     input  wire       ft_rxf_n,
     input  wire       ft_txe_n,
     output wire       ft_rd_n,
     output wire       ft_wr_n,
-    input  wire       ft_clkout,   // AC5, reserved for sync FIFO (input only here)
-    input  wire       ft_oe_n,     // AC6, reserved for sync FIFO (input only here)
-    input  wire       ft_siwu_n    // AC4, reserved (input only here)
+    input  wire       ft_clkout,   // AC5, 60 MHz in sync FIFO mode
+    inout  wire       ft_oe_n,     // AC6, driven only in sync FIFO mode
+    input  wire       ft_siwu_n    // AC4, not used (kept high by a pull-up)
 );
     localparam [15:0] BAUD_DIV = (CLK_HZ + BAUD / 2) / BAUD;
 
@@ -65,10 +66,16 @@ module top #(
         .q({uart_rx_s, rxf_n_s, txe_n_s, rb_s})
     );
 
-    // FT232H sync-FIFO pins: diagnostics only. CLKOUT counts as active when
-    // it toggled within the last ~2.4 ms (FT232H in sync FIFO mode).
+    // CLKOUT counts as active when it toggled within the last ~2.4 ms
+    // (FT232H in sync FIFO mode); this selects the sync bridge.
+    // (A toggle flop in the CLKOUT domain is watched instead of CLKOUT itself, so
+    // the CLKOUT net only feeds clock pins and can use global clock routing.)
+    wire fclk = ft_clkout;
+    reg  ftog = 1'b0;
+    always @(posedge fclk)
+        ftog <= ~ftog;
     wire [2:0] ftx_s;
-    sync2 #(.W(3)) u_ftx (.clk(clk), .d({ft_clkout, ft_siwu_n, ft_oe_n}), .q(ftx_s));
+    sync2 #(.W(3)) u_ftx (.clk(clk), .d({ftog, ft_siwu_n, ft_oe_n}), .q(ftx_s));
     reg        clk_prev;
     reg [15:0] clk_idle;
     always @(posedge clk) begin
@@ -80,7 +87,19 @@ module top #(
         else if (clk_idle != 16'hFFFF)
             clk_idle <= clk_idle + 1'b1;
     end
-    wire [2:0] ft_status = {clk_idle != 16'hFFFF, ftx_s[1], ftx_s[0]};
+    wire sync_mode = (clk_idle != 16'hFFFF);
+
+    // The CLKOUT-domain halves of the sync FIFOs freeze when CLKOUT stops, so
+    // the 27 MHz halves stay in reset until CLKOUT has run for 64 cycles; by
+    // then the CLKOUT side has been reset as well (frst below).
+    reg [6:0] sync_age;
+    always @(posedge clk)
+        if (rst || !sync_mode)
+            sync_age <= 7'd0;
+        else if (!sync_age[6])
+            sync_age <= sync_age + 1'b1;
+    wire sync_ready = sync_age[6];
+    wire [2:0] ft_status = {sync_mode, ftx_s[1], ftx_s[0]};
 
     // ------------------------------------------------------------ FIFOs
     localparam RX_AW = 12, TX_AW = 12;
@@ -123,36 +142,84 @@ module top #(
     uart_tx u_utx (.clk(clk), .rst(rst), .div(baud_div), .start(utx_start),
                    .data(txf_dout), .busy(utx_busy), .txd(uart_tx));
 
-    // ------------------------------------------------------------ FT245
-    wire [7:0] ft_d_out;
-    wire       ft_d_oe;
+    // ------------------------------------------------------------ FT245 async
+    wire [7:0] fta_d_out;
+    wire       fta_d_oe, fta_rd_n, fta_wr_n;
     wire       frx_valid;
     wire [7:0] frx_data;
     wire       ftx_pop;
-    reg        active_port;   // 0 = UART, 1 = FT245
-
-    assign ft_d = ft_d_oe ? ft_d_out : 8'bz;
+    reg        active_port;   // 0 = UART, 1 = FT232H
 
     ft245_async u_ft (
-        .clk(clk), .rst(rst), .rxf_n_s(rxf_n_s), .txe_n_s(txe_n_s),
-        .d_in(ft_d), .d_out(ft_d_out), .d_oe(ft_d_oe), .rd_n(ft_rd_n), .wr_n(ft_wr_n),
+        .clk(clk), .rst(rst || sync_mode), .rxf_n_s(rxf_n_s), .txe_n_s(txe_n_s),
+        .d_in(ft_d), .d_out(fta_d_out), .d_oe(fta_d_oe), .rd_n(fta_rd_n), .wr_n(fta_wr_n),
         .rx_space(rxf_level < ((1 << RX_AW) - 8)),
         .rx_valid(frx_valid), .rx_data(frx_data),
-        .tx_avail(active_port && txf_valid), .tx_data(txf_dout), .tx_pop(ftx_pop)
+        .tx_avail(active_port && txf_valid && !sync_mode), .tx_data(txf_dout), .tx_pop(ftx_pop)
     );
 
+    // ------------------------------------------------------------ FT245 sync (CLKOUT domain)
+    reg  [2:0] frst_s = 3'b111;          // reset held until sync mode is seen
+    always @(posedge fclk)
+        frst_s <= {frst_s[1:0], rst || !sync_mode};
+    wire frst = frst_s[2];
+
+    // host -> FPGA: sync bridge -> dual-clock FIFO -> main RX FIFO
+    wire       fs_rx_wr, fs_rx_room;
+    wire [7:0] fs_rx_data;
+    wire [7:0] srx_dout;
+    wire       srx_valid, srx_more;
+    wire       srx_pop;
+    afifo8 #(.AW(9)) u_srx (
+        .wclk(fclk), .wrst(frst), .wr(fs_rx_wr), .din(fs_rx_data), .wroom(fs_rx_room),
+        .rclk(clk), .rrst(!sync_ready), .rd(srx_pop), .dout(srx_dout), .valid(srx_valid), .more(srx_more)
+    );
+
+    // FPGA -> host: main TX FIFO -> dual-clock FIFO -> sync bridge
+    wire       stx_room, stx_pop;
+    wire [7:0] stx_dout;
+    wire       stx_valid, stx_more, fs_tx_rd;
+    afifo8 #(.AW(9)) u_stx (
+        .wclk(clk), .wrst(!sync_ready), .wr(stx_pop), .din(txf_dout), .wroom(stx_room),
+        .rclk(fclk), .rrst(frst), .rd(fs_tx_rd), .dout(stx_dout), .valid(stx_valid), .more(stx_more)
+    );
+    assign stx_pop = sync_ready && active_port && txf_valid && stx_room;
+
+    wire [7:0] fts_d_out;
+    wire       fts_d_oe, fts_oe_n, fts_rd_n, fts_wr_n;
+    ft245_sync u_fts (
+        .clk(fclk), .rst(frst), .rxf_n(ft_rxf_n), .txe_n(ft_txe_n), .d_in(ft_d),
+        .d_out(fts_d_out), .d_oe(fts_d_oe), .oe_n(fts_oe_n), .rd_n(fts_rd_n), .wr_n(fts_wr_n),
+        .rx_room(fs_rx_room), .rx_wr(fs_rx_wr), .rx_data(fs_rx_data),
+        .tx_valid(stx_valid), .tx_more(stx_more), .tx_data(stx_dout), .tx_rd(fs_tx_rd)
+    );
+
+    // Pin mux: the sync bridge owns the bus while CLKOUT runs and it is out of
+    // reset (sync_mode also drops when CLKOUT stops and frst can no longer move).
+    wire use_sync = sync_ready && !frst;
+    // (one tri-state per pin: nested "? :" with 'z' would not become an IOBUF)
+    wire [7:0] ft_d_o  = use_sync ? fts_d_out : fta_d_out;
+    wire       ft_d_en = use_sync ? fts_d_oe  : fta_d_oe;
+    assign ft_d    = ft_d_en ? ft_d_o : 8'bz;
+    assign ft_rd_n = use_sync ? fts_rd_n : fta_rd_n;
+    assign ft_wr_n = use_sync ? fts_wr_n : fta_wr_n;
+    assign ft_oe_n = use_sync ? fts_oe_n : 1'bz;
+
     // ------------------------------------------------------------ port mux
+    // Sync-FIFO bytes move into the main RX FIFO when no other link writes.
+    assign srx_pop = sync_ready && srx_valid && !urx_valid && !frx_valid && (rxf_level < ((1 << RX_AW) - 8));
+
     always @(posedge clk) begin
         if (rst)
             active_port <= 1'b0;
-        else if (frx_valid)
+        else if (frx_valid || srx_pop)
             active_port <= 1'b1;
         else if (urx_valid)
             active_port <= 1'b0;
     end
 
-    assign rxf_wr  = urx_valid | frx_valid;
-    assign rxf_din = frx_valid ? frx_data : urx_data;
+    assign rxf_wr  = urx_valid | frx_valid | srx_pop;
+    assign rxf_din = frx_valid ? frx_data : srx_pop ? srx_dout : urx_data;
     wire rx_overflow = urx_valid && (rxf_full || frx_valid);
 
     reg utx_pop;
@@ -164,24 +231,25 @@ module top #(
             utx_pop   <= 1'b1;
         end
     end
-    assign txf_rd = utx_pop | ftx_pop;
+    assign txf_rd = utx_pop | ftx_pop | stx_pop;
 
     wire tx_drained = !txf_valid && (txf_level == 0) && !utx_busy && !utx_start;
 
     // ------------------------------------------------------------ engine
     wire       e_cle, e_ale, e_we, e_re, e_ce, e_wp_hi, e_io_oe, e_nand_park;
     wire [7:0] e_io_o;
-    wire       e_cs, e_sck, e_mosi, e_io2_hi, e_io3_hi, e_spi_park;
+    wire       e_cs, e_sck, e_mosi, e_io2_hi, e_io3_hi, e_spi_park, e_qin;
     wire       nand_act, spi_act, err;
 
     engine #(.CLK_HZ(CLK_HZ), .BAUD_DIV_DEFAULT(BAUD_DIV), .RX_AW(RX_AW)) u_eng (
         .clk(clk), .rst(rst),
         .rx_valid(rxf_valid), .rx_data(rxf_dout), .rx_pop(rxf_rd),
-        .tx_full(txf_full), .tx_push(txf_wr), .tx_data(txf_din), .tx_drained(tx_drained),
+        .tx_full(txf_full), .tx_room(txf_level < ((1 << TX_AW) - 16)), .tx_push(txf_wr), .tx_data(txf_din), .tx_drained(tx_drained),
         .nand_cle(e_cle), .nand_ale(e_ale), .nand_we_act(e_we), .nand_re_act(e_re),
         .nand_ce_act(e_ce), .nand_wp_hi(e_wp_hi), .nand_io_o(e_io_o), .nand_io_oe(e_io_oe),
         .nand_io_i(nand_io), .nand_rb(rb_s), .nand_park(e_nand_park),
-        .spi_cs_act(e_cs), .spi_sck(e_sck), .spi_mosi(e_mosi), .spi_miso(spi_io1),
+        .spi_cs_act(e_cs), .spi_sck(e_sck), .spi_mosi(e_mosi),
+        .spi_io_i({spi_io3, spi_io2, spi_io1, spi_io0}), .spi_qin(e_qin),
         .spi_io2_hi(e_io2_hi), .spi_io3_hi(e_io3_hi), .spi_park(e_spi_park),
         .baud_div(baud_div), .active_port(active_port), .ft_status(ft_status),
         .rx_overflow(rx_overflow),
@@ -199,9 +267,9 @@ module top #(
 
     assign spi_cs_n  = e_spi_park ? 1'bz : ~e_cs;
     assign spi_sck   = e_spi_park ? 1'bz : e_sck;
-    assign spi_io0   = e_spi_park ? 1'bz : e_mosi;
-    assign spi_io2   = e_spi_park ? 1'bz : e_io2_hi;
-    assign spi_io3   = e_spi_park ? 1'bz : e_io3_hi;
+    assign spi_io0   = (e_spi_park || e_qin) ? 1'bz : e_mosi;
+    assign spi_io2   = (e_spi_park || e_qin) ? 1'bz : e_io2_hi;
+    assign spi_io3   = (e_spi_park || e_qin) ? 1'bz : e_io3_hi;
 
     // ------------------------------------------------------------ LEDs (active low)
     reg [23:0] hb;
@@ -209,7 +277,7 @@ module top #(
 
     wire led_uart, led_ft, led_nand, led_spi;
     pulse_stretch u_ls0 (.clk(clk), .in(urx_valid | utx_start), .out(led_uart));
-    pulse_stretch u_ls1 (.clk(clk), .in(frx_valid | ftx_pop),   .out(led_ft));
+    pulse_stretch u_ls1 (.clk(clk), .in(frx_valid | ftx_pop | srx_pop | stx_pop), .out(led_ft));
     pulse_stretch u_ls2 (.clk(clk), .in(nand_act),              .out(led_nand));
     pulse_stretch u_ls3 (.clk(clk), .in(spi_act),               .out(led_spi));
 

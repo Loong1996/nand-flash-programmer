@@ -9,9 +9,11 @@ import os
 import random
 
 import cocotb
+from cocotb.triggers import Timer
+from cocotb.utils import get_sim_time
 
-from simhost import (FtModel, SimDevice, SimFtLink, SimUartLink, UartModel, bridge,
-                     start)
+from simhost import (FtModel, FtSyncModel, SimDevice, SimFtLink, SimUartLink, UartModel,
+                     bridge, start)
 
 from nsprog import jobs  # noqa: E402  (path set up by simhost)
 from nsprog import protocol as P  # noqa: E402
@@ -43,6 +45,16 @@ def check_models(dut):
 def ft_device(dut, **kw):
     ft = FtModel(dut, **kw)
     return ft, SimDevice(SimFtLink(ft))
+
+
+def ft_sync_device(dut, **kw):
+    ft = FtSyncModel(dut, **kw)
+    return ft, SimDevice(SimFtLink(ft))
+
+
+def check_ft(dut, ft):
+    assert ft.errors == 0
+    assert int(dut.ft_contention.value) == 0, "FT232H data bus contention"
 
 
 # ----------------------------------------------------------------------------
@@ -154,6 +166,78 @@ async def uart_baud_and_nand_id(dut):
         jobs.read(det.nand, out, start=7, count=1, oob=False)   # block no other test touches
         assert out.getvalue() == b"\xff" * det.nand.block_size
         dev.close()
+    await bridge(host)()
+    check_models(dut)
+
+
+@cocotb.test(skip=SPI_NAND)
+async def ft_sync_fifo_nand_fast(dut):
+    """245 sync FIFO link (60 MHz CLKOUT), fastest NAND timings, TX stalls."""
+    await start(dut)
+    ft, dev = ft_sync_device(dut, stall_every=3000, stall_cycles=400, rx_gap_every=700)
+    await Timer(40, "us")                   # CLKOUT detection + bridge reset release
+
+    def host():
+        info = dev.open(negotiate=False)
+        assert info.port == 1 and info.caps & P.CAP_QSPI and info.caps & P.CAP_SYNC245
+        pins = dev.pins()
+        assert pins.ft_clkout_active and pins.port_ft
+        b = P.Batch()
+        rs = [b.echo(i & 0xFF) for i in range(3000)]      # longer than one read burst
+        dev.run(b)
+        assert [r.value for r in rs] == [i & 0xFF for i in range(3000)]
+        drv = detect(dev, want="nand").nand
+        drv.set_timing("fast")
+        image = raw_image(drv, 2, seed=21)
+        assert jobs.write(drv, image, start=4, bb="skip").ok
+        out = io.BytesIO()
+        t0 = get_sim_time("ns")
+        jobs.read(drv, out, start=4, count=2)
+        dt = get_sim_time("ns") - t0
+        assert out.getvalue() == image
+        dut._log.info("sync FIFO NAND read (fast timing): %d bytes in %.0f us = %.2f MB/s",
+                      len(image), dt / 1e3, len(image) / dt * 1e3)
+        # raw bus throughput: one long NAND_READ burst from the page register
+        b = P.Batch()
+        b.nand_ce(True)
+        r = b.nand_read(60000)
+        b.nand_ce(False)
+        t0 = get_sim_time("ns")
+        dev.run(b)
+        dt = get_sim_time("ns") - t0
+        assert len(r.value) == 60000
+        dut._log.info("sync FIFO NAND_READ burst: %.2f MB/s", 60000 / dt * 1e3)
+    await bridge(host)()
+    check_ft(dut, ft)
+    check_models(dut)
+
+
+@cocotb.test(skip=SPI_NAND)
+async def ft_spi_nor_quad(dut):
+    """1-1-4 fast read (6Bh) through SPI_READ4, at the fastest SPI clock."""
+    await start(dut)
+    ft, dev = ft_device(dut)
+
+    def host():
+        dev.open(negotiate=False)
+        drv = detect(dev, want="spi").spi
+        assert drv.chip.quad_cmd == 0x6B and drv.chip.qer == 5, drv.chip
+        set_spi_clock(dev, 13.5)
+        image = rnd(5000, seed=8)
+        assert jobs.write(drv, image, start=2).ok
+        drv.quad = "auto"                       # QE is already set in the model
+        assert drv.read(2 * 4096 + 3, 4000) == image[3:4003]
+        assert drv.quad_active
+        for quad in ("off", "auto"):
+            drv.quad = quad
+            t0 = get_sim_time("ns")
+            assert drv.read(2 * 4096, 5000) == image
+            dt = get_sim_time("ns") - t0
+            dut._log.info("SPI NOR read at 13.5 MHz, quad=%s: %.2f MB/s (async FIFO link)",
+                          quad, 5000 / dt * 1e3)
+        out = io.BytesIO()
+        jobs.read(drv, out, start=2, count=2)
+        assert out.getvalue()[:len(image)] == image
     await bridge(host)()
     check_models(dut)
 

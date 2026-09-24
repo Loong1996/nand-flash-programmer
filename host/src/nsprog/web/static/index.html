@@ -682,6 +682,8 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
         <div class="li"><div class="li-l"><div class="t">写前擦除</div></div><label class="switch"><input type="checkbox" id="optErase"><span></span></label></div>
         <div class="li"><div class="li-l"><div class="t">写后校验</div></div><label class="switch"><input type="checkbox" id="optVerify"><span></span></label></div>
         <div class="li"><div class="li-l"><div class="t">SPI 时钟</div></div><span class="pop"><select id="spiMhz"></select></span></div>
+        <div class="li"><div class="li-l"><div class="t">并口 NAND 时序</div><div class="s" id="timHint">安全：杜邦线也稳定</div></div><div class="seg" id="segTiming"></div></div>
+        <div class="li"><div class="li-l"><div class="t">SPI NOR 四线读</div><div class="s" id="quadHint">芯片已开 QE 时自动使用</div></div><div class="seg" id="segQuad"></div></div>
         <div class="li"><div class="li-l"><div class="t">允许 1.8 V 芯片</div><div class="s">只在接了电平转换板时打开</div></div>
           <label class="switch"><input type="checkbox" id="optAllow18"><span></span></label></div>
       </div>
@@ -802,6 +804,8 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
           <label class="switch"><input type="checkbox" data-setting="use_rb"><span></span></label></div>
         <div class="li ico"><span class="sq purple"><svg class="ic"><use href="#i-shield"/></svg></span><div class="li-l"><div class="t">SPI NAND 片上 ECC</div></div>
           <label class="switch"><input type="checkbox" data-setting="spinand_ecc"><span></span></label></div>
+        <div class="li ico"><span class="sq indigo"><svg class="ic"><use href="#i-gauge"/></svg></span><div class="li-l"><div class="t">并口 NAND 时序</div></div><div class="seg" id="segSetTiming"></div></div>
+        <div class="li ico"><span class="sq teal"><svg class="ic"><use href="#i-bolt"/></svg></span><div class="li-l"><div class="t">SPI NOR 四线读</div></div><div class="seg" id="segSetQuad"></div></div>
         <div class="li ico"><span class="sq red"><svg class="ic"><use href="#i-trash"/></svg></span><div class="li-l"><div class="t">写前擦除</div></div>
           <label class="switch"><input type="checkbox" data-setting="erase"><span></span></label></div>
         <div class="li ico"><span class="sq green"><svg class="ic"><use href="#i-seal"/></svg></span><div class="li-l"><div class="t">写后校验</div></div>
@@ -1002,6 +1006,10 @@ function initSettings(st) {
   $('optErase').checked = st.erase !== false;
   $('optVerify').checked = st.verify !== false;
   $('spiMhz').value = String(st.spi_mhz || 6.75);
+  setSeg($('segTiming'), st.nand_timing || 'safe'); $('timHint').textContent = TIM_HINT[st.nand_timing || 'safe'];
+  setSeg($('segQuad'), st.spi_quad || 'auto'); $('quadHint').textContent = QUAD_HINT[st.spi_quad || 'auto'];
+  makeSeg($('segSetTiming'), [['safe', '安全'], ['medium', '中速'], ['fast', '快速'], ['auto', '自动']], st.nand_timing || 'safe', v => saveSetting({nand_timing: v}));
+  makeSeg($('segSetQuad'), [['off', '关'], ['auto', '自动'], ['on', '开']], st.spi_quad || 'auto', v => saveSetting({spi_quad: v}));
   makeSeg($('segTheme'), [['auto', '自动'], ['light', '浅色'], ['dark', '深色']], st.theme || 'auto', v => saveSetting({theme: v}));
 }
 function applySettings(st) {
@@ -1022,7 +1030,7 @@ async function loadPorts() {
   try {
     const j = await api('/api/ports'), sel = $('port'), cur = sel.value;
     sel.innerHTML = '<option value="">自动检测</option>' + j.ports.map(p =>
-      `<option value="${esc(p.device)}">${p.likely ? '★ ' : ''}${esc(p.device === 'emu' ? '软件模拟器' : p.device === 'emu:spinand' ? '模拟器（SPI NAND）' : p.device === 'ft232h' ? 'FT232H 高速通道' : p.device)}</option>`).join('');
+      `<option value="${esc(p.device)}">${p.likely ? '★ ' : ''}${esc(p.device === 'emu' ? '软件模拟器' : p.device === 'emu:spinand' ? '模拟器（SPI NAND）' : p.device === 'ft232h' ? 'FT232H 高速通道' : p.device === 'ft232h-sync' ? 'FT232H 同步 FIFO（最快）' : p.device)}</option>`).join('');
     sel.value = cur || j.default || '';
     if (sel.selectedIndex < 0) sel.value = '';
   } catch (e) { fail(e); }
@@ -1164,6 +1172,11 @@ makeSeg($('segBB'), [['', '默认'], ['skip', '跳过'], ['keep', '保持地址'
     keep: '1:1 物理地址，坏块原样读出，写入时丢弃该段', force: '⚠️ 当作全部是好块，会擦掉出厂坏块标记'}[v];
 });
 makeSeg($('segOOB'), [['auto', '自动'], ['1', '包含'], ['0', '不含']], 'auto');
+const TIM_HINT = {safe: '安全：杜邦线也稳定', medium: '中速：ONFI 模式 1，读约 9 MB/s', fast: '快速：ONFI 模式 2+，读 13.5 MB/s，需短线',
+  auto: '按芯片 ONFI 参数页自动选择'};
+const QUAD_HINT = {off: '只用单线读', auto: '芯片已开 QE 时自动使用', on: '临时打开 QE，读完恢复'};
+makeSeg($('segTiming'), [['safe', '安全'], ['medium', '中速'], ['fast', '快速'], ['auto', '自动']], 'safe', v => { $('timHint').textContent = TIM_HINT[v]; });
+makeSeg($('segQuad'), [['off', '关'], ['auto', '自动'], ['on', '开']], 'auto', v => { $('quadHint').textContent = QUAD_HINT[v]; });
 const TILES = [
   {op: 'read', t: '读取', s: '整片或指定范围备份到文件', i: 'down', c: 'blue'},
   {op: 'write', t: '写入', s: '选择文件写入，自动擦除与校验', i: 'up', c: 'green'},
@@ -1198,7 +1211,8 @@ function renderRW(s) {
   } else { $('rangeTxt').textContent = '—'; $('rangeBar').style.width = '0'; }
 }
 function params(extra) {
-  const p = new URLSearchParams({target, start: $('start').value || 0, spi_mhz: $('spiMhz').value, allow_1v8: $('optAllow18').checked ? 1 : 0});
+  const p = new URLSearchParams({target, start: $('start').value || 0, spi_mhz: $('spiMhz').value, allow_1v8: $('optAllow18').checked ? 1 : 0,
+    nand_timing: $('segTiming')._value, spi_quad: $('segQuad')._value});
   if ($('count').value) p.set('count', $('count').value);
   if ($('segBB')._value) p.set('bb', $('segBB')._value);
   for (const [k, v] of Object.entries(extra || {})) p.set(k, v);

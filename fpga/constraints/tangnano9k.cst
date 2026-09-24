@@ -1,6 +1,8 @@
 // Tang Nano 9K (GW1NR-LV9QN88PC6/I5) pin constraints for nsprog.
 // Pin numbers are FPGA package pins (printed on the board silkscreen).
-// Header pins are all in 3.3V banks; LEDs/buttons are in the 1.8V bank 3.
+// Only 3.3V banks 1 and 2 are used for flash/FT232H signals. Bank 3 (LEDs,
+// buttons and header pins 79-86) runs at 1.8V: do not wire flash chips there.
+// Pins 68-75 are shared with the LCD connector (leave it unplugged).
 // Wiring tables: docs/wiring.md
 
 // ---------------------------------------------------------------- board
@@ -49,17 +51,17 @@ IO_PORT "nand_io[6]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "nand_io[7]" 32;  // TSOP48 pin 44
 IO_PORT "nand_io[7]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
-IO_LOC  "nand_cle" 85;    // TSOP48 pin 16
+IO_LOC  "nand_cle" 70;    // TSOP48 pin 16
 IO_PORT "nand_cle" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
-IO_LOC  "nand_ale" 84;    // TSOP48 pin 17
+IO_LOC  "nand_ale" 71;    // TSOP48 pin 17
 IO_PORT "nand_ale" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
-IO_LOC  "nand_we_n" 83;   // TSOP48 pin 18
+IO_LOC  "nand_we_n" 72;   // TSOP48 pin 18
 IO_PORT "nand_we_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC  "nand_re_n" 82;   // TSOP48 pin 8
+IO_LOC  "nand_re_n" 73;   // TSOP48 pin 8
 IO_PORT "nand_re_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC  "nand_ce_n" 81;   // TSOP48 pin 9
+IO_LOC  "nand_ce_n" 74;   // TSOP48 pin 9
 IO_PORT "nand_ce_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC  "nand_wp_n" 80;   // TSOP48 pin 19 (pull-down = write protected)
+IO_LOC  "nand_wp_n" 69;   // TSOP48 pin 19 (pull-down = write protected)
 IO_PORT "nand_wp_n" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC  "nand_rb_n" 49;   // TSOP48 pin 7 (open drain)
 IO_PORT "nand_rb_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
@@ -69,7 +71,7 @@ IO_LOC  "spi_cs_n" 39;    // 8-pin: 1  | SOIC16: 7
 IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "spi_sck" 63;     // 8-pin: 6  | SOIC16: 16
 IO_PORT "spi_sck" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
-IO_LOC  "spi_io0" 79;     // 8-pin: 5 (DI)  | SOIC16: 15
+IO_LOC  "spi_io0" 75;     // 8-pin: 5 (DI)  | SOIC16: 15
 IO_PORT "spi_io0" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "spi_io1" 77;     // 8-pin: 2 (DO)  | SOIC16: 8
 IO_PORT "spi_io1" IO_TYPE=LVCMOS33 PULL_MODE=UP;
@@ -104,9 +106,9 @@ IO_PORT "ft_rd_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "ft_wr_n" 38;     // ACBUS3
 IO_PORT "ft_wr_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 // Reserved for 245 synchronous FIFO mode (inputs only in this build)
-IO_LOC  "ft_clkout" 35;   // ACBUS5 CLKOUT -> global clock pin GCLKT_4
+IO_LOC  "ft_clkout" 36;   // ACBUS5 CLKOUT -> clock pin 36 (35 cannot reach the global clock tree in the open toolchain)
 IO_PORT "ft_clkout" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
-IO_LOC  "ft_siwu_n" 36;   // ACBUS4 SIWU# (also 10k pull-up to 3V3)
+IO_LOC  "ft_siwu_n" 35;   // ACBUS4 SIWU# (also 10k pull-up to 3V3)
 IO_PORT "ft_siwu_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "ft_oe_n" 37;     // ACBUS6 OE#
 IO_PORT "ft_oe_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;

@@ -230,6 +230,41 @@ def test_spinor_sfdp_generic():
     assert any("SFDP" in m for m in det.messages)
 
 
+def test_spinor_quad_read_modes():
+    model = SpiNorModel()
+    dev = make(None, model)
+    drv = detect(dev, want="spi").spi
+    assert drv.chip.quad_cmd == 0x6B and drv.chip.qer == 5 and drv.quad_capable
+    image = rnd(20000, seed=6)
+    assert jobs.write(drv, image, start=1).ok
+    model.sr2 = 0x00                              # QE clear: auto must not use 6Bh
+    drv.quad = "auto"
+    assert drv.read(4096, len(image)) == image and not drv.quad_active
+    drv.quad = "on"                               # sets QE for the read, then restores it
+    out = io.BytesIO()
+    jobs.read(drv, out, start=1, count=5)
+    assert out.getvalue()[:len(image)] == image
+    assert model.sr2 == 0x00
+    model.sr2 = 0x02
+    drv.quad = "auto"
+    assert drv.read(4096, 100) == image[:100] and drv.quad_active
+    drv.quad = "off"
+    assert drv.read(4096, 100) == image[:100] and not drv.quad_active
+
+
+def test_nand_timing_profiles():
+    dev = nand_dev()
+    drv = detect(dev, want="nand").nand
+    assert drv.auto_timing() == "safe"            # emulator ONFI page: mode 0 only
+    assert drv.set_timing("fast") == "fast"
+    regs = dev.link.engine.regs
+    assert regs[P.REG_T_RP] == 1 and regs[P.REG_T_REH] == 1 and regs[P.REG_T_WHR] == 3
+    image = raw_image(drv, 1, seed=3)
+    assert jobs.write(drv, image, start=0).ok
+    with pytest.raises(ValueError):
+        drv.set_timing("warp")
+
+
 # --------------------------------------------------------------------- SPI NAND
 def test_spinand_flow():
     dev = make(None, SpiNandModel(blocks=16))

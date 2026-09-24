@@ -1,4 +1,4 @@
-// Behavioural SPI NOR (W25Q-style, mode 0) with SFDP.
+// Behavioural SPI NOR (W25Q-style, mode 0) with SFDP and 6Bh quad output read.
 `timescale 1ns/1ps
 
 module spi_nor_model #(
@@ -12,10 +12,10 @@ module spi_nor_model #(
 ) (
     input  wire cs_n,
     input  wire sck,
-    input  wire mosi,
-    output wire miso,
-    input  wire wp_n,
-    input  wire hold_n
+    inout  wire mosi,      // IO0
+    inout  wire miso,      // IO1
+    inout  wire wp_n,      // IO2
+    inout  wire hold_n     // IO3
 );
     reg [7:0] mem  [0:SIZE-1];
     reg [7:0] sfdp [0:255];
@@ -26,10 +26,17 @@ module spi_nor_model #(
     reg [7:0]  in_sh, out_sh, nxt, cmd;
     reg [31:0] addr;
     reg        miso_r;
+    reg        qmode;          // 6Bh data phase: output on IO3..IO0
+    reg  [3:0] qout;
+    reg  [7:0] qbyte;
+    integer    qn;
     integer    bitcnt, bytecnt, pn, i, k, violations;
     integer    programs, erases;
 
-    assign miso = cs_n ? 1'bz : miso_r;
+    assign miso   = cs_n ? 1'bz : (qmode ? qout[1] : miso_r);
+    assign mosi   = (!cs_n && qmode) ? qout[0] : 1'bz;
+    assign wp_n   = (!cs_n && qmode) ? qout[2] : 1'bz;
+    assign hold_n = (!cs_n && qmode) ? qout[3] : 1'bz;
 
     task put32(input integer off, input [31:0] v);
         begin
@@ -40,6 +47,7 @@ module spi_nor_model #(
 
     initial begin
         busy = 0; wel = 0; sr1 = 8'h1C; sr2 = 8'h02; violations = 0; programs = 0; erases = 0;
+        qmode = 0; qout = 4'hF; qn = 0;
         miso_r = 1'b1;
         for (i = 0; i < SIZE; i = i + 1) mem[i] = 8'hFF;
         for (i = 0; i < 256; i = i + 1) sfdp[i] = 8'hFF;
@@ -48,7 +56,9 @@ module spi_nor_model #(
         sfdp[8] = 8'h00; sfdp[9] = 8'h06; sfdp[10] = 8'h01; sfdp[11] = 8'd16;
         sfdp[12] = 8'h30; sfdp[13] = 8'h00; sfdp[14] = 8'h00; sfdp[15] = 8'hFF;
         for (i = 0; i < 16; i = i + 1) put32(8'h30 + 4 * i, 32'hFFFFFFFF);
-        put32(8'h30, 32'hFF00_20E1);
+        put32(8'h30, 32'hFF40_20E1);                      // bit 22: 1-1-4 fast read
+        put32(8'h30 + 8, 32'h6B08_FFFF);                  // 1-1-4: opcode 6Bh, 8 dummy clocks
+        put32(8'h30 + 56, 32'hFFDF_FFFF);                 // DWORD15: QER = 101b (QE = SR2 bit 1)
         put32(8'h34, SIZE * 8 - 1);
         put32(8'h30 + 28, {8'h52, 8'd15, 8'h20, 8'd12});
         put32(8'h30 + 32, {8'h00, 8'h00, 8'hD8, 8'd16});
@@ -71,14 +81,14 @@ module spi_nor_model #(
 
     // ---------------------------------------------------------------- shift logic
     always @(negedge cs_n) begin
-        bitcnt = 0; bytecnt = 0; nxt = 8'hFF; pn = 0;
+        bitcnt = 0; bytecnt = 0; nxt = 8'hFF; pn = 0; qmode = 0;
         if (!hold_n) begin
             violations = violations + 1;
             $display("[spi_nor_model] HOLD# low while selected");
         end
     end
 
-    always @(posedge sck) if (!cs_n) begin
+    always @(posedge sck) if (!cs_n && !qmode) begin
         in_sh  = {in_sh[6:0], mosi};
         bitcnt = bitcnt + 1;
         if (bitcnt == 8) begin
@@ -88,7 +98,13 @@ module spi_nor_model #(
         end
     end
 
-    always @(negedge sck) if (!cs_n) begin
+    always @(negedge sck) if (!cs_n && qmode) begin
+        qbyte = busy ? 8'hFF : mem[(addr + qn / 2) % SIZE];
+        #(T_V) qout = (qn % 2 == 0) ? qbyte[7:4] : qbyte[3:0];
+        qn = qn + 1;
+    end
+
+    always @(negedge sck) if (!cs_n && !qmode) begin
         if (bitcnt == 0)
             out_sh = nxt;
         else
@@ -122,6 +138,16 @@ module spi_nor_model #(
                                 nxt = busy ? 8'hFF : mem[(addr + bytecnt - k) % SIZE];
                         end
                     end
+                    8'h6B: begin
+                        if (bytecnt <= 3) addr = {addr[23:0], b};
+                        if (bytecnt == 4) begin                    // 8 dummy clocks done
+                            if (!sr2[1]) begin
+                                violations = violations + 1;
+                                $display("[spi_nor_model] 6Bh with QE=0");
+                            end
+                            qmode = 1; qn = 0;
+                        end
+                    end
                     8'h02: begin
                         if (bytecnt <= 3) addr = {addr[23:0], b};
                         else if (pn < 256) begin pbuf[pn] = b; pn = pn + 1; end
@@ -141,7 +167,8 @@ module spi_nor_model #(
     // ---------------------------------------------------------------- execute on CS# rise
     integer sz, base;
     always @(posedge cs_n) begin
-        if (bitcnt != 0 && bytecnt > 0) begin
+        qmode = 0;
+        if (bitcnt != 0 && bytecnt > 0 && cmd != 8'h6B) begin
             violations = violations + 1;
             $display("[spi_nor_model] CS# raised mid-byte (cmd %02x)", cmd);
         end

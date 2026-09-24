@@ -19,6 +19,7 @@ nsprog --version
 
 - **Linux**：`pipx install ./host`；把用户加入 `dialout` 组，才能访问串口（`sudo usermod -aG dialout $USER`，重新登录后生效）。openFPGALoader 用发行版自带的包即可。
 - **Windows**：从 python.org 安装 Python，执行 `py -m pip install .\host`。烧 FPGA 可以用 openFPGALoader 的 Windows 版，也可以用高云官方的 Gowin Programmer（选择 `host\src\nsprog\bitstream\nsprog_tangnano9k.fs`）。
+- **不装 Python**：下载单文件程序（GitHub Actions → `apps` 工作流 → Artifacts，或 Release 附件）：macOS 用 `nsprog-macos-arm64`（第一次运行前 `chmod +x`，并在“系统设置 → 隐私与安全性”里允许），Windows 用 `nsprog-windows-x86_64.exe`。双击打开网页界面；在终端里加参数运行就是 `nsprog` 命令行。用 FT232H 时 macOS 还需要 `brew install libusb`。
 
 ## 2. 烧写 FPGA 固件（一次性）
 
@@ -103,8 +104,18 @@ nsprog erase -t spi
 nsprog web
 ```
 
-浏览器自动打开 http://127.0.0.1:8765 ，依次点：选择端口 → 连接 → 检测 → 读取/写入。
-没有硬件时，可以在端口里选 “Software emulator” 体验全部功能。
+浏览器自动打开 http://127.0.0.1:8765 。左侧（手机上是底部）的页面：
+
+| 页面 | 用途 |
+|---|---|
+| 设备 | 选端口、连接；**引脚诊断**（8 根数据线的电平灯、R/B#、FT232H CLKOUT）；链路自检测速 |
+| 芯片 | 两张芯片卡片（并口 NAND / SPI），点选操作对象；手动指定型号；检测日志 |
+| 读写 | 范围、坏块处理、OOB、NAND 时序档、SPI 四线读；六个操作；把文件拖进来即可写入或校验；进度环、速度、剩余时间 |
+| 数据 | 读出结果的**十六进制查看器**（OOB 标橙色，可跳到 `0x…` / `p页` / `b块`，文本或 HEX 查找）；**坏块分布图** |
+| 工具 | 不接硬件也能用：镜像信息、去除/添加 OOB、ECC 检查/纠错、UBI 信息/提取 |
+| 芯片库 / 历史 / 设置 | 搜索全部型号；每次操作的记录；主题（自动/浅色/深色）和默认参数 |
+
+没有硬件时，可以在端口里选 “软件模拟器” 体验全部功能。设置和历史保存在 `~/.nsprog`。
 
 ## 8. FT232H 高速通道（可选）
 
@@ -120,6 +131,20 @@ nsprog web
    - Linux 需要 udev 规则：`SUBSYSTEM=="usb", ATTR{idVendor}=="0403", MODE="0666"`。
 2. 断电，按 [wiring.md](wiring.md) 第 4 节接线。
 3. 两根 USB 都插上，运行 `nsprog info`，应显示 `link FT232H`。也可以用 `-p ft232h` 强制指定。
+4. （可选，更快）同步 FIFO：`nsprog -p ft232h-sync selftest`。通过后读写都加 `-p ft232h-sync`，网页里选 “FT232H 同步 FIFO”。这个模式只在仿真里验证过，不稳定就回到 `-p ft232h`。
+
+## 8.1 提速选项
+
+| 选项 | 作用 | 什么时候用 |
+|---|---|---|
+| `--nand-timing safe` | 默认，读周期约 185 ns | 杜邦线、第一次用 |
+| `--nand-timing medium` / `fast` | 111 ns / 74 ns（fast 总线上限 13.5 MB/s） | 线短（< 10 cm）、读两遍结果一致 |
+| `--nand-timing auto` | 按 ONFI 参数页里的时序模式自动选 | ONFI 芯片 |
+| `--spi-quad auto` | 默认；芯片已经打开 QE 位时用 `6Bh` 四线读 | — |
+| `--spi-quad on` | 临时打开 QE 位，读完恢复原值 | 想让 SPI NOR 读得更快 |
+| `--spi-mhz 13.5` | SPI 最高时钟 | 线短、芯片支持 |
+
+只有配合 FT232H 才看得出区别：串口链路本身只有约 290 KB/s。
 
 ## 9. 常见问题
 
@@ -130,7 +155,7 @@ nsprog web
 | NAND ID 全是 00 | 数据线短路到地；芯片没供电 |
 | ID 每次读都不一样 | 缺去耦电容；地线太少；杜邦线太长 |
 | `NAND stayed busy` | R/B# 没接或接错：检查 49 脚，或者加 `--no-rb` |
-| 写入报 `write protected` | WP#（TSOP48 19 脚 → FPGA 80 脚）没接好 |
+| 写入报 `write protected` | WP#（TSOP48 19 脚 → FPGA 69 脚）没接好 |
 | SPI 识别成奇怪的大小 | 用 `--spi-mhz 1` 再试；检查 HOLD#（7 脚）是否为高电平 |
 | 校验失败 | 降低 SPI 频率；NAND 换 `--bb skip`；看是否 MLC 芯片（原始数据会有位翻转） |
 | LED5 常亮 | 通信出过错。运行一次 `nsprog info` 会清除；频繁出现说明链路不稳定 |

@@ -32,7 +32,8 @@ log = logging.getLogger(__name__)
 STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 DEFAULT_SETTINGS = {"theme": "auto", "spi_mhz": 6.75, "fast_uart": True, "use_rb": True,
-                    "spinand_ecc": False, "verify": True, "erase": True}
+                    "spinand_ecc": False, "verify": True, "erase": True,
+                    "nand_timing": "safe", "spi_quad": "auto"}
 
 
 def home_dir() -> str:
@@ -133,6 +134,8 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         out = [{"device": p["device"], "description": p["description"], "likely": p["likely"]}
                for p in list_serial_ports()]
         if find_ft232h_url():
+            out.insert(0, {"device": "ft232h-sync", "description": "FT232H sync FIFO (fastest)",
+                           "likely": False})
             out.insert(0, {"device": "ft232h", "description": "FT232H FIFO (fast)", "likely": True})
         out.append({"device": "emu", "description": "Software emulator (no hardware)", "likely": False})
         out.append({"device": "emu:spinand", "description": "Emulator with SPI NAND", "likely": False})
@@ -362,6 +365,10 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         drv = _driver(target)
         if drv.kind != "nand":
             set_spi_clock(st.dev, _q(req, "spi_mhz", st.settings.get("spi_mhz", 6.75), float))
+        if drv.kind == "nand":
+            drv.set_timing(_q(req, "nand_timing", st.settings.get("nand_timing", "safe")))
+        if drv.kind == "spinor":
+            drv.quad = _q(req, "spi_quad", st.settings.get("spi_quad", "auto"))
         start = _q(req, "start", 0, int)
         count = _q(req, "count", None, int)
         return target, drv, start, count

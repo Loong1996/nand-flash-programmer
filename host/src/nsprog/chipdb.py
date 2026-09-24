@@ -193,6 +193,9 @@ class SpiNorChip:
     addr_bytes: int = 3
     unlock_cmd: Optional[int] = None
     notes: str = ""
+    quad_cmd: Optional[int] = None      # 1-1-4 fast read (from SFDP)
+    quad_dummy: int = 8
+    qer: int = 0                        # SFDP quad enable requirement
 
     @property
     def linear(self) -> bool:

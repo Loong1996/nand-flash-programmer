@@ -38,11 +38,14 @@
 | `22` | SPI_READ | `len:u16`（MOSI 发 `FF`） | `data[len]` |
 | `23` | SPI_XFER | `len:u16`, `data[len]` | `data[len]`（全双工） |
 | `24` | SPI_POLL | `n`(1–4), `cmd[n]`, `mask`, `value`, `timeout_ms:u16` | 2 字节：`result`, `last` |
+| `25` | SPI_READ4 | `len:u16` | `data[len]`（四线输入，固件 ≥ 1.1） |
 
 说明：
 - `NAND_POLL_STATUS`：发一次 `70h`，然后反复读状态直到 `(status & mask) == value` 或超时。不接 R/B# 也能用。读操作中用它等待后，需要再发 `00h` 回到数据输出模式。
 - `NAND_WAIT_RB`：先等待 `T_WB` 个周期，再检测 R/B#。
 - `SPI_POLL`：循环执行「CS 拉低 → 发送 cmd → 读 1 字节 → CS 拉高」直到满足条件或超时。用于 SPI NOR 的 `05h` 和 SPI NAND 的 `0Fh C0h`。
+- `SPI_READ4`：四线读的数据阶段（每个 SCK 读 4 位，IO3..IO0，高半字节在前）。执行时 FPGA 释放 IO0/IO2/IO3，直到下一个 `SPI_CS 0` 才重新驱动。典型用法：`SPI_CS 1` → `SPI_WRITE 6B a2 a1 a0 00`（命令、地址、8 个空时钟）→ `SPI_READ4 n` → `SPI_CS 0`。芯片需先置 QE 位。
+- `NAND_READ` / `NAND_WRITE` / `SPI_READ` / `SPI_READ4` / `SPI_WRITE` 按突发方式执行：总线周期首尾相接，中间没有空闲时钟（NAND 最快每字节 2 个时钟 = 13.5 MB/s；SPI 单线每字节 16 个时钟，四线 4 个时钟）。发送 FIFO 快满时自动暂停。
 - `timeout_ms = 0` 表示只检测一次。
 - 未知操作码被当作 1 字节 NOP 跳过，并置错误标志。
 
@@ -73,9 +76,9 @@
 | 7 | 板卡 ID（1 = Tang Nano 9K） |
 | 8–11 | 时钟频率 Hz（u32） |
 | 12 | 接收 FIFO 大小 log2（12 → 4096 字节） |
-| 13 | 能力位：bit0 NAND8，bit1 SPI，bit3 FT245，bit4 UART |
+| 13 | 能力位：bit0 NAND8，bit1 SPI，bit3 FT245，bit4 UART，bit5 SPI_READ4，bit6 FT232H 245 同步 FIFO |
 | 14 | 错误标志：bit0 未知操作码/参数错，bit1 字节间超时中止，bit2 UART 接收溢出，bit3 波特率回退 |
-| 15 | 当前链路（0=UART，1=FT245） |
+| 15 | 当前链路（0=UART，1=FT232H，异步或同步） |
 
 ## 5. 可靠性规则
 

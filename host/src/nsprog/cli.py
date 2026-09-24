@@ -89,6 +89,11 @@ def _target(args, dev) -> FlashDriver:
     if drv.kind != "nand":
         mhz = set_spi_clock(dev, args.spi_mhz)
         log.info("SPI clock %.2f MHz", mhz)
+    if drv.kind == "nand":
+        prof = drv.set_timing(args.nand_timing)
+        log.info("NAND bus timing: %s", prof)
+    if drv.kind == "spinor":
+        drv.quad = args.spi_quad
     print(drv.describe(), file=sys.stderr)
     return drv
 
@@ -395,7 +400,8 @@ def cmd_selftest(args):
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nsprog", description="NAND / SPI flash programmer (Tang Nano 9K FPGA)")
     p.add_argument("--version", action="version", version="nsprog " + __version__)
-    p.add_argument("-p", "--port", help="serial port, 'ft232h', 'ftdi://...', or 'emu[:nand|spinor|spinand]' "
+    p.add_argument("-p", "--port", help="serial port, 'ft232h' (async FIFO), 'ft232h-sync' "
+                                        "(sync FIFO), 'ftdi://...', or 'emu[:nand|spinor|spinand]' "
                                         "(default: auto-detect)")
     p.add_argument("-v", "--verbose", action="count", default=0)
     p.add_argument("--no-fast-uart", action="store_true", help="stay at 115200 baud on the UART link")
@@ -415,6 +421,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-rb", action="store_true", help="do not use R/B#; poll the status register")
         sp.add_argument("--ecc", action="store_true", help="SPI NAND: enable on-die ECC (default: raw)")
         sp.add_argument("--spi-mhz", type=float, default=6.75, help="SPI clock (default 6.75 MHz, max 13.5)")
+        sp.add_argument("--spi-quad", choices=["off", "auto", "on"], default="auto",
+                        help="SPI NOR 1-1-4 quad read: auto = only if QE is already set, "
+                             "on = set QE for the read and restore it (default auto)")
+        sp.add_argument("--nand-timing", choices=["safe", "medium", "fast", "auto"], default="safe",
+                        help="parallel NAND bus timing; faster needs short wires (default safe)")
         sp.add_argument("--allow-1v8", action="store_true", help="allow 1.8V parts (only with a level shifter)")
         sp.add_argument("-y", "--yes", action="store_true", help="confirm dangerous options")
 
