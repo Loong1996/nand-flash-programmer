@@ -24,7 +24,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from .. import __version__, chipdb, jobs
+from .. import __version__, chipdb, config, jobs
 from ..device import Device, connect
 from ..flash import FlashDriver, ParallelNand, SpiNor, detect, set_spi_clock
 from ..link import find_ft232h_url, list_serial_ports
@@ -37,26 +37,9 @@ DEFAULT_SETTINGS = {"theme": "auto", "spi_mhz": 6.75, "fast_uart": True, "use_rb
                     "nand_timing": "safe", "spi_quad": "auto"}
 
 
-def home_dir() -> str:
-    d = os.environ.get("NSPROG_HOME") or os.path.join(os.path.expanduser("~"), ".nsprog")
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _load_json(name, default):
-    try:
-        with open(os.path.join(home_dir(), name), encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return default
-
-
-def _save_json(name, data):
-    path = os.path.join(home_dir(), name)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+home_dir = config.home_dir
+_load_json = config.load_json
+_save_json = config.save_json
 
 
 def _zip_tree(root: str, zpath: str) -> None:
@@ -364,6 +347,28 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 findings = T.diagnose(body["symptom"], st.dev)
                 st.bump()
                 return T.as_dict(body["symptom"], findings)
+        return await _in_thread(work)
+
+    @app.post("/api/ft232h/tune")
+    async def api_ft232h_tune():
+        from .. import ft232h as F
+        if _busy():
+            raise HTTPException(409, "a job is running")
+
+        def work():
+            with st.lock:
+                dev = _need_dev()
+                try:
+                    if not F.phase_supported(dev):
+                        raise ValueError("固件 %s 不支持调相，需要 1.3" % dev.info.gw_version)
+                    rep = F.tune(dev)
+                except ValueError as e:
+                    raise HTTPException(400, str(e)) from None
+                if rep.best is not None:
+                    F.save_phase(dev.link.name, rep.best)
+                st.bump()
+                return {"results": [{"phase": p, "ok": err is None, "error": err} for p, err in rep.results],
+                        "window": rep.window, "best": rep.best, "summary": rep.summary()}
         return await _in_thread(work)
 
     @app.post("/api/selftest")

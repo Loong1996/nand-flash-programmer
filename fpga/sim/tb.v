@@ -60,11 +60,11 @@ module tb;
         end
     endgenerate
 
-`ifdef GATE_SIM
-    top dut (                            // synthesised netlist: parameters already applied
-`else
-    top #(.CLK_HZ(27_000_000)) dut (
+    top
+`ifndef GATE_SIM
+        #(.PH_WD_MS(3))                  // FT phase watchdog: 3 ms of sim time (host: 1 s = 1 ms)
 `endif
+        dut (                            // 27 MHz crystal -> rPLL -> 54 MHz main clock
         .clk27(clk27), .btn_n(btn_n), .led_n(led_n),
         .uart_tx(uart_tx), .uart_rx(uart_rx),
         .nand_io(nand_io), .nand_cle(nand_cle), .nand_ale(nand_ale),

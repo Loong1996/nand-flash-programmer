@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 
 @dataclass
@@ -16,6 +16,9 @@ class SfdpInfo:
     quad_cmd: Optional[int] = None      # 1-1-4 fast read opcode (usually 6Bh)
     quad_dummy: int = 8                 # dummy + mode clocks for quad_cmd
     qer: int = 0                        # quad enable requirement (DWORD15 bits 22:20)
+    #: fast read modes: "dual" 1-1-2, "dual-io" 1-2-2, "quad" 1-1-4, "quad-io" 1-4-4
+    #: -> (opcode, mode clocks, dummy clocks)
+    read_modes: Dict[str, Tuple[int, int, int]] = field(default_factory=dict)
 
 
 def parse_header(hdr: bytes):
@@ -67,6 +70,14 @@ def parse_bfpt(raw: bytes) -> Optional[SfdpInfo]:
         if op not in (0x00, 0xFF):
             info.quad_cmd = op
             info.quad_dummy = ((dw[2] >> 16) & 0x1F) + ((dw[2] >> 21) & 0x7)
+    # (support bit in DWORD1, DWORD holding the parameters, bit shift of the 16-bit field)
+    for name, bit, word, sh in (("dual", 16, 3, 0), ("dual-io", 20, 3, 16), ("quad-io", 21, 2, 0),
+                                ("quad", 22, 2, 16)):
+        if dw[0] & (1 << bit) and n > word:
+            field16 = (dw[word] >> sh) & 0xFFFF
+            op = field16 >> 8
+            if op not in (0x00, 0xFF):
+                info.read_modes[name] = (op, (field16 >> 5) & 0x7, field16 & 0x1F)
     if n >= 15:
         info.qer = (dw[14] >> 20) & 0x7
     return info

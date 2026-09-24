@@ -22,12 +22,13 @@ from . import protocol as P
 UNKNOWN = [b for b in range(256) if b not in (
     P.NOP, P.ECHO, P.INFO, P.SET_REG, P.DELAY_US, P.SET_BAUD, P.GET_PINS, P.PIN_TEST,
     P.NAND_CE, P.NAND_CMD, P.NAND_ADDR, P.NAND_WRITE, P.NAND_READ, P.NAND_WAIT_RB,
-    P.NAND_POLL_STATUS, P.SPI_CS, P.SPI_WRITE, P.SPI_READ, P.SPI_XFER, P.SPI_POLL, P.SPI_READ4)]
+    P.NAND_POLL_STATUS, P.SPI_CS, P.SPI_WRITE, P.SPI_READ, P.SPI_XFER, P.SPI_POLL, P.SPI_READ4,
+    P.SPI_WIDE)]
 
 #: opcodes whose arguments can make one operation take long (or change the UART rate);
 #: raw garbage has them replaced by an unknown opcode to bound the run time
 SLOW = {P.DELAY_US, P.SET_BAUD, P.NAND_WRITE, P.NAND_READ, P.NAND_WAIT_RB, P.NAND_POLL_STATUS,
-        P.SPI_WRITE, P.SPI_READ, P.SPI_XFER, P.SPI_POLL, P.SPI_READ4}
+        P.SPI_WRITE, P.SPI_READ, P.SPI_XFER, P.SPI_POLL, P.SPI_READ4, P.SPI_WIDE}
 
 
 def _u16(v: int) -> bytes:
@@ -67,6 +68,8 @@ def random_op(rng: random.Random, safe: bool, max_len: int = 256) -> bytes:
         lambda: bytes([P.SPI_READ]) + _u16(ln),
         lambda: bytes([P.SPI_XFER]) + _u16(ln) + rand(ln),
         lambda: bytes([P.SPI_READ4]) + _u16(min(ln, 64)),
+        lambda: bytes([P.SPI_WIDE]) + _u16(ln) + bytes([rng.randrange(3)]) + rand(ln),
+        lambda: bytes([P.SPI_WIDE]) + _u16(ln) + bytes([4 | rng.randrange(3)]),
         lambda: bytes([P.SET_REG, rng.randrange(0, 9)]) + _u16(rng.randrange(0, 12)),   # timing regs only
     ]
     if not safe:
@@ -117,7 +120,7 @@ def restore(dev) -> None:
         b.pin_test(0, P.PT_OFF)
     b.nand_ce(False)
     b.spi_cs(False)
-    for reg, val in P.REG_DEFAULTS.items():
+    for reg, val in P.reg_defaults(dev.info.clk_hz if dev.opened else 27_000_000).items():
         b.set_reg(reg, val)
     dev.run(b)
     dev.pin_ctrl = P.PIN_CTRL_DEFAULT

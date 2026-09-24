@@ -302,7 +302,9 @@ SYMPTOMS: List[Symptom] = [
                 "FT232H 的 EEPROM 要先设成 245 FIFO：nsprog ft232h-setup，然后重新插拔。",
                 "macOS 需要 brew install libusb；Windows 用 Zadig 装 WinUSB 驱动。",
                 "FT232H 和 Tang Nano 9K 必须共地；不要把 FT232H 的 3.3V/5V 接过来。",
-                "同步 FIFO 模式要接 CLKOUT（AC5 → FPGA 36 脚），线尽量短；不稳定就用异步模式 -p ft232h。"],
+                "同步 FIFO 模式要接 CLKOUT（AC5 → FPGA 36 脚），线尽量短；"
+                "先跑 nsprog -p ft232h-sync ft232h-tune 调时钟相位（固件 1.3），"
+                "可用窗口少于 4 档或仍不稳定就用异步模式 -p ft232h。"],
             needs_device=False),
 ]
 

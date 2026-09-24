@@ -72,6 +72,9 @@ def cell_library() -> Path:
     bad = "  assign IO = OEN ? 1'bz : I;\n  assign I = IO;"
     if bad in src:
         src = src.replace(bad, "  assign IO = OEN ? 1'bz : I;\n  assign O = IO;")
+    # rPLL is an empty stub there; gowin_pll_sim.v provides a behavioural model
+    import re
+    src = re.sub(r"(\(\* blackbox \*\)\s*)?module rPLL \(.*?endmodule", "", src, flags=re.S)
     dst = FPGA / "build" / "gate" / "cells_sim_fixed.v"
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(src)
@@ -81,11 +84,11 @@ def cell_library() -> Path:
 def run(variant: str, tests=None) -> None:
     models = sorted((HERE / "models").glob("*.v"))
     if variant == "gate":
-        sources = [netlist(), cell_library(), HERE / "gowin_bram_sim.v"]
+        sources = [netlist(), cell_library(), HERE / "gowin_bram_sim.v", HERE / "gowin_pll_sim.v"]
         defines = {"GATE_SIM": 1}
         tests = tests or GATE_TESTS
     else:
-        sources = sorted(RTL.glob("*.v"))
+        sources = sorted(RTL.glob("*.v")) + [HERE / "gowin_pll_sim.v"]
         defines = {"SPI_NAND": 1} if variant == "nand" else {}
         if variant in CHIP_TESTS:
             defines = {variant.upper(): 1}

@@ -3,9 +3,12 @@
 // Input is sampled on the rising SCK edge, or just before the falling edge
 // when `sample_late` is set (helps with long wires / slow chips).
 //
-// quad = 0: one bit per clock, MOSI out / MISO in (8 SCK periods per byte).
-// quad = 1: quad input, four bits per clock on IO3..IO0 (2 SCK periods per
-//           byte, used for the data phase of 6Bh "fast read quad output").
+// width = 0: one bit per clock, MOSI out / MISO in (8 SCK periods per byte).
+// width = 1: two bits per clock on IO1..IO0 (dual; 4 SCK periods per byte).
+// width = 2: four bits per clock on IO3..IO0 (quad; 2 SCK periods per byte).
+// Whether IO lines are driven (qout) or sampled (qin) is decided by the
+// caller; the shifter always shifts both directions. The width is latched
+// per byte.
 //
 // Handshake as in nand_bus: hold `req` with `tx` until the one-cycle `ack`.
 // A request is taken when idle or on the last SCK falling edge of the current
@@ -17,7 +20,7 @@ module spi_master (
     input  wire       rst,
     input  wire [7:0] div,
     input  wire       sample_late,
-    input  wire       quad,
+    input  wire [1:0] width,
     input  wire       req,
     input  wire [7:0] tx,
     output reg        ack,
@@ -26,6 +29,7 @@ module spi_master (
     output reg        busy,
     output reg        sck,
     output wire       mosi,
+    output wire [3:0] qout,      // {IO3, IO2, IO1, IO0} data for wide writes (IO0 = MOSI in x1)
     input  wire [3:0] qin        // {IO3, IO2, IO1 (MISO), IO0}
 );
     reg [7:0] sh_out;
@@ -33,11 +37,17 @@ module spi_master (
     reg [2:0] bitn;
     reg [7:0] cnt;
     reg       phase;   // 0 = SCK low half, 1 = SCK high half
-    reg       q;       // quad mode latched for the current byte
+    reg [1:0] w;       // width latched for the current byte
 
     assign mosi = sh_out[7];
+    assign qout = (w == 2'd2) ? sh_out[7:4] :
+                  (w == 2'd1) ? {2'b11, sh_out[7:6]} : {3'b111, sh_out[7]};
 
-    wire [7:0] shifted_in = q ? {sh_in[3:0], qin} : {sh_in[6:0], qin[1]};
+    wire [7:0] shifted_in = (w == 2'd2) ? {sh_in[3:0], qin} :
+                            (w == 2'd1) ? {sh_in[5:0], qin[1:0]} : {sh_in[6:0], qin[1]};
+    wire [7:0] shifted_out = (w == 2'd2) ? {sh_out[3:0], 4'h0} :
+                             (w == 2'd1) ? {sh_out[5:0], 2'b00} : {sh_out[6:0], 1'b0};
+    wire [2:0] last_bit = (width == 2'd2) ? 3'd1 : (width == 2'd1) ? 3'd3 : 3'd7;
     wire       take_idle  = !busy && req && !ack;
 
     always @(posedge clk) begin
@@ -47,14 +57,14 @@ module spi_master (
             busy   <= 1'b0;
             sck    <= 1'b0;
             sh_out <= 8'h00;
-            q      <= 1'b0;
+            w      <= 2'd0;
         end else if (!busy) begin
             if (take_idle) begin
                 ack    <= 1'b1;
                 busy   <= 1'b1;
                 sh_out <= tx;
-                q      <= quad;
-                bitn   <= quad ? 3'd1 : 3'd7;
+                w      <= width;
+                bitn   <= last_bit;
                 cnt    <= div;
                 phase  <= 1'b0;
                 sck    <= 1'b0;
@@ -80,14 +90,14 @@ module spi_master (
                         // next byte follows without a gap
                         ack    <= 1'b1;
                         sh_out <= tx;
-                        q      <= quad;
-                        bitn   <= quad ? 3'd1 : 3'd7;
+                        w      <= width;
+                        bitn   <= last_bit;
                     end else begin
                         busy <= 1'b0;
                     end
                 end else begin
                     bitn   <= bitn - 1'b1;
-                    sh_out <= q ? sh_out : {sh_out[6:0], 1'b0};
+                    sh_out <= shifted_out;
                 end
             end
         end

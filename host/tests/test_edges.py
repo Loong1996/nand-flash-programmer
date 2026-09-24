@@ -71,7 +71,7 @@ def test_info_needs_open():
     with pytest.raises(ProtocolError):
         _ = d.info
     d.open(negotiate=False)
-    assert d.opened and d.info.clk_hz == 27_000_000
+    assert d.opened and d.info.clk_hz == 54_000_000
 
 
 # ------------------------------------------------------------------ job ranges

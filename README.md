@@ -11,7 +11,7 @@
 - 芯片库：直接使用 [bbogush/nand_programmer](https://github.com/bbogush/nand_programmer) 的数据库，再加上 ONFI（并口 NAND）、SFDP（SPI NOR）自动识别，以及 SPI NOR/NAND 补充表
 - 全新协议：FPGA 是微操作执行引擎，**支持新芯片只改上位机**
 - 链路：板载 USB 串口（自动提速到 3 Mbaud，约 290 KB/s）；可选 FT232H：异步 FIFO 约 2 MB/s，同步 FIFO 仿真约 13 MB/s
-- 提速选项：NAND 突发读写与快速时序（`--nand-timing`），SPI NOR 四线读（`--spi-quad`）
+- 提速选项：54 MHz 主时钟，NAND 突发读写与快速时序（`--nand-timing fast|turbo`），SPI NOR / SPI NAND 双线、四线读写（`--spi-io`、`--spi-quad-write`），FT232H 同步 FIFO 相位自动调节（`ft232h-tune`）
 
 > 状态：FPGA 设计、上位机、仿真和软件模拟器测试已完成；**尚未在实物上验证**。第一次使用请按 [上手指南](docs/quickstart.md) 逐步检查。
 >

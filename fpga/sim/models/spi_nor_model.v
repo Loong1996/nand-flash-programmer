@@ -1,4 +1,9 @@
-// Behavioural SPI NOR (W25Q-style, mode 0) with SFDP and 6Bh quad output read.
+// Behavioural SPI NOR (W25Q-style, mode 0) with SFDP and dual / quad commands:
+//   03h read, 0Bh fast read, 3Bh 1-1-2, 6Bh 1-1-4, BBh 1-2-2, EBh 1-4-4,
+//   02h page program, 32h quad page program (1-1-4), 20h/52h/D8h erase, C7h/60h,
+//   05h/35h status, 01h write status, 06h/04h, 9Fh JEDEC ID, 5Ah SFDP.
+// Every phase after the command byte has its own bus width; quad commands need
+// QE (SR2 bit 1) set, otherwise they count as a violation.
 `timescale 1ns/1ps
 
 module spi_nor_model #(
@@ -23,21 +28,36 @@ module spi_nor_model #(
 
     reg        busy, wel;
     reg [7:0]  sr1, sr2;
-    reg [7:0]  in_sh, out_sh, nxt, cmd;
+    reg [7:0]  in_sh, nxt, cmd;
     reg [31:0] addr;
-    reg        miso_r;
-    reg        qmode;          // 6Bh data phase: output on IO3..IO0
-    reg  [3:0] qout;
-    reg  [7:0] qbyte;
-    integer    qn;
-    integer    bitcnt, bytecnt, pn, i, k, violations;
-    integer    programs, erases;
+    integer    violations, programs, erases;
+
+    // ---- per-command phase plan (set after the command byte)
+    integer    n_addr;        // address bytes
+    integer    n_mode;        // mode bytes (sent by the host, ignored)
+    integer    n_dummy;       // dummy clocks after address + mode
+    integer    w_in;          // bits per clock while the host sends (after the command byte)
+    integer    w_out;         // bits per clock while the chip sends
+    reg        data_out;      // data phase: chip drives
+    // ---- progress
+    integer    bitcnt;        // bits of the current input byte
+    integer    bytecnt;       // bytes received so far (command = byte 0)
+    integer    dummy_left;
+    reg        in_data;       // past address/mode/dummy
+    reg        driving;       // chip drives IO lines
+    reg  [7:0] out_sh;
+    integer    out_bits;      // bits left in out_sh
+    integer    didx;          // data byte index
+    integer    pn, i, k;
+    reg  [3:0] io_o;          // {IO3, IO2, IO1, IO0} values while driving
+
+    wire [3:0] io_i = {hold_n, wp_n, miso, mosi};
 
     // DO stays high-Z until the command byte has been received (like real parts)
-    assign miso   = (cs_n || bytecnt == 0) ? 1'bz : (qmode ? qout[1] : miso_r);
-    assign mosi   = (!cs_n && qmode) ? qout[0] : 1'bz;
-    assign wp_n   = (!cs_n && qmode) ? qout[2] : 1'bz;
-    assign hold_n = (!cs_n && qmode) ? qout[3] : 1'bz;
+    assign mosi   = (!cs_n && driving && w_out >= 2) ? io_o[0] : 1'bz;
+    assign miso   = (!cs_n && driving) ? io_o[1] : 1'bz;
+    assign wp_n   = (!cs_n && driving && w_out == 4) ? io_o[2] : 1'bz;
+    assign hold_n = (!cs_n && driving && w_out == 4) ? io_o[3] : 1'bz;
 
     task put32(input integer off, input [31:0] v);
         begin
@@ -48,8 +68,7 @@ module spi_nor_model #(
 
     initial begin
         busy = 0; wel = 0; sr1 = 8'h1C; sr2 = 8'h02; violations = 0; programs = 0; erases = 0;
-        qmode = 0; qout = 4'hF; qn = 0;
-        miso_r = 1'b1;
+        driving = 0; io_o = 4'hF;
         for (i = 0; i < SIZE; i = i + 1) mem[i] = 8'hFF;
         for (i = 0; i < 256; i = i + 1) sfdp[i] = 8'hFF;
         sfdp[0] = "S"; sfdp[1] = "F"; sfdp[2] = "D"; sfdp[3] = "P";
@@ -57,8 +76,9 @@ module spi_nor_model #(
         sfdp[8] = 8'h00; sfdp[9] = 8'h06; sfdp[10] = 8'h01; sfdp[11] = 8'd16;
         sfdp[12] = 8'h30; sfdp[13] = 8'h00; sfdp[14] = 8'h00; sfdp[15] = 8'hFF;
         for (i = 0; i < 16; i = i + 1) put32(8'h30 + 4 * i, 32'hFFFFFFFF);
-        put32(8'h30, 32'hFF40_20E1);                      // bit 22: 1-1-4 fast read
-        put32(8'h30 + 8, 32'h6B08_FFFF);                  // 1-1-4: opcode 6Bh, 8 dummy clocks
+        put32(8'h30, 32'hFF7120E1);                       // 1-1-2, 1-2-2, 1-4-4, 1-1-4 fast reads
+        put32(8'h30 + 8, 32'h6B08_EB44);                  // 1-1-4: 6Bh 8 dummy; 1-4-4: EBh 2 mode + 4 dummy
+        put32(8'h30 + 12, 32'hBB80_3B08);                 // 1-2-2: BBh 4 mode clocks; 1-1-2: 3Bh 8 dummy
         put32(8'h30 + 56, 32'hFFDF_FFFF);                 // DWORD15: QER = 101b (QE = SR2 bit 1)
         put32(8'h34, SIZE * 8 - 1);
         put32(8'h30 + 28, {8'h52, 8'd15, 8'h20, 8'd12});
@@ -80,96 +100,154 @@ module spi_nor_model #(
         status1 = sr1 | (wel ? 8'h02 : 8'h00) | (busy ? 8'h01 : 8'h00);
     endfunction
 
+    function [7:0] data_byte;
+        input integer idx;
+        begin
+            if (cmd == 8'h5A)
+                data_byte = sfdp[(addr + idx) % 256];
+            else if (cmd == 8'h05)
+                data_byte = status1(0);
+            else if (cmd == 8'h35)
+                data_byte = sr2;
+            else if (cmd == 8'h9F)
+                data_byte = (idx == 0) ? JEDEC[23:16] : (idx == 1) ? JEDEC[15:8] : (idx == 2) ? JEDEC[7:0] : 8'hFF;
+            else
+                data_byte = busy ? 8'hFF : mem[(addr + idx) % SIZE];
+        end
+    endfunction
+
+    task quad_needs_qe;
+        begin
+            if (!sr2[1]) begin
+                violations = violations + 1;
+                $display("[spi_nor_model] quad command %02x with QE=0", cmd);
+            end
+        end
+    endtask
+
+    // ---------------------------------------------------------------- command decode
+    task plan(input [7:0] c);
+        begin
+            cmd = c; addr = 0; n_addr = 0; n_mode = 0; n_dummy = 0; w_in = 1; w_out = 1;
+            data_out = 0; pn = 0;
+            case (c)
+                8'h03:              begin n_addr = 3; data_out = 1; end
+                8'h0B, 8'h5A:       begin n_addr = 3; n_dummy = 8; data_out = 1; end
+                8'h3B:              begin n_addr = 3; n_dummy = 8; data_out = 1; w_out = 2; end
+                8'h6B:              begin n_addr = 3; n_dummy = 8; data_out = 1; w_out = 4; quad_needs_qe; end
+                8'hBB:              begin n_addr = 3; n_mode = 1; w_in = 2; data_out = 1; w_out = 2; end
+                8'hEB:              begin n_addr = 3; n_mode = 1; n_dummy = 4; w_in = 4; data_out = 1; w_out = 4;
+                                          quad_needs_qe; end
+                8'h02:              begin n_addr = 3; end
+                8'h32:              begin n_addr = 3; quad_needs_qe; end     // data phase x4 (see below)
+                8'h20, 8'h52, 8'hD8: n_addr = 3;
+                8'h05, 8'h35, 8'h9F: data_out = 1;
+                default: ;
+            endcase
+        end
+    endtask
+
     // ---------------------------------------------------------------- shift logic
     always @(negedge cs_n) begin
-        bitcnt = 0; bytecnt = 0; nxt = 8'hFF; pn = 0; qmode = 0;
+        bitcnt = 0; bytecnt = 0; in_data = 0; driving = 0; dummy_left = 0; out_bits = 0; didx = 0;
+        cmd = 8'h00; w_in = 1; w_out = 1; data_out = 0; n_addr = 0; n_mode = 0; n_dummy = 0;
         if (!hold_n) begin
             violations = violations + 1;
             $display("[spi_nor_model] HOLD# low while selected");
         end
     end
 
-    always @(posedge sck) if (!cs_n && !qmode) begin
-        in_sh  = {in_sh[6:0], mosi};
-        bitcnt = bitcnt + 1;
-        if (bitcnt == 8) begin
-            bitcnt = 0;
-            handle(in_sh);
-            bytecnt = bytecnt + 1;
+    // current input width: the command byte is always x1; 32h sends data x4
+    function integer cur_w_in;
+        input dummy;
+        begin
+            if (bytecnt == 0) cur_w_in = 1;
+            else if (cmd == 8'h32 && bytecnt > n_addr) cur_w_in = 4;
+            else cur_w_in = w_in;
+        end
+    endfunction
+
+    always @(posedge sck) if (!cs_n) begin
+        if (in_data && data_out) begin
+            ;                                             // chip is sending
+        end else if (dummy_left > 0) begin
+            dummy_left = dummy_left - 1;
+            if (dummy_left == 0) begin in_data = 1; start_out; end
+        end else begin
+            k = cur_w_in(0);
+            if (k == 4)      in_sh = {in_sh[3:0], io_i};
+            else if (k == 2) in_sh = {in_sh[5:0], io_i[1:0]};
+            else             in_sh = {in_sh[6:0], io_i[0]};
+            bitcnt = bitcnt + k;
+            if (bitcnt >= 8) begin
+                bitcnt = 0;
+                take(in_sh);
+                bytecnt = bytecnt + 1;
+            end
         end
     end
 
-    always @(negedge sck) if (!cs_n && qmode) begin
-        qbyte = busy ? 8'hFF : mem[(addr + qn / 2) % SIZE];
-        #(T_V) qout = (qn % 2 == 0) ? qbyte[7:4] : qbyte[3:0];
-        qn = qn + 1;
-    end
-
-    always @(negedge sck) if (!cs_n && !qmode) begin
-        if (bitcnt == 0)
-            out_sh = nxt;
-        else
-            out_sh = {out_sh[6:0], 1'b1};
-        #(T_V) miso_r = out_sh[7];
-    end
-
-    task handle(input [7:0] b);
+    task start_out;
         begin
-            if (bytecnt == 0) begin
-                cmd = b;
-                addr = 0;
-                case (b)
-                    8'h05: nxt = status1(0);
-                    8'h35: nxt = sr2;
-                    8'h9F: nxt = busy ? 8'hFF : JEDEC[23:16];
-                    default: nxt = 8'hFF;
-                endcase
-            end else begin
-                case (cmd)
-                    8'h05: nxt = status1(0);
-                    8'h35: nxt = sr2;
-                    8'h9F: nxt = (bytecnt == 1) ? JEDEC[15:8] : (bytecnt == 2) ? JEDEC[7:0] : 8'hFF;
-                    8'h03, 8'h0B, 8'h5A: begin
-                        if (bytecnt <= 3) addr = {addr[23:0], b};
-                        k = (cmd == 8'h03) ? 3 : 4;         // bytes before data
-                        if (bytecnt >= k) begin
-                            if (cmd == 8'h5A)
-                                nxt = sfdp[(addr + bytecnt - k) % 256];
-                            else
-                                nxt = busy ? 8'hFF : mem[(addr + bytecnt - k) % SIZE];
-                        end
-                    end
-                    8'h6B: begin
-                        if (bytecnt <= 3) addr = {addr[23:0], b};
-                        if (bytecnt == 4) begin                    // 8 dummy clocks done
-                            if (!sr2[1]) begin
-                                violations = violations + 1;
-                                $display("[spi_nor_model] 6Bh with QE=0");
-                            end
-                            qmode = 1; qn = 0;
-                        end
-                    end
-                    8'h02: begin
-                        if (bytecnt <= 3) addr = {addr[23:0], b};
-                        else if (pn < 256) begin pbuf[pn] = b; pn = pn + 1; end
-                    end
-                    8'h20, 8'h52, 8'hD8: if (bytecnt <= 3) addr = {addr[23:0], b};
-                    8'h01: begin
-                        if (bytecnt == 1) pbuf[0] = b;
-                        if (bytecnt == 2) pbuf[1] = b;
-                        pn = bytecnt;
-                    end
-                    default: ;
-                endcase
+            if (data_out) begin
+                driving = 1;
+                out_sh = data_byte(didx);
+                out_bits = 8;
             end
         end
     endtask
 
+    task take(input [7:0] b);
+        begin
+            if (bytecnt == 0) begin
+                plan(b);
+                if (data_out && n_addr == 0) begin in_data = 1; start_out; end
+            end else if (bytecnt <= n_addr) begin
+                addr = {addr[23:0], b};
+                if (bytecnt == n_addr && n_mode == 0) begin
+                    if (n_dummy > 0) dummy_left = n_dummy;
+                    else begin in_data = 1; start_out; end
+                end
+            end else if (bytecnt <= n_addr + n_mode) begin
+                if (bytecnt == n_addr + n_mode) begin
+                    if (n_dummy > 0) dummy_left = n_dummy;
+                    else begin in_data = 1; start_out; end
+                end
+            end else begin
+                // data from the host: program buffer / status register
+                if (cmd == 8'h02 || cmd == 8'h32) begin
+                    if (pn < 256) begin pbuf[pn] = b; pn = pn + 1; end
+                end else if (cmd == 8'h01) begin
+                    pbuf[pn] = b; pn = pn + 1;
+                end
+            end
+            if (cmd == 8'h01 && bytecnt >= 1 && bytecnt <= 2) begin
+                pbuf[bytecnt - 1] = b; pn = bytecnt;
+            end
+        end
+    endtask
+
+    always @(negedge sck) if (!cs_n && driving) begin
+        if (out_bits == 0) begin
+            didx = didx + 1;
+            out_sh = data_byte(didx);
+            out_bits = 8;
+        end
+        #(T_V);
+        if (w_out == 4) begin
+            io_o = out_sh[7:4]; out_sh = {out_sh[3:0], 4'h0}; out_bits = out_bits - 4;
+        end else if (w_out == 2) begin
+            io_o = {2'b11, out_sh[7:6]}; out_sh = {out_sh[5:0], 2'b00}; out_bits = out_bits - 2;
+        end else begin
+            io_o = {2'b11, out_sh[7], 1'b1}; out_sh = {out_sh[6:0], 1'b1}; out_bits = out_bits - 1;
+        end
+    end
+
     // ---------------------------------------------------------------- execute on CS# rise
     integer sz, base;
     always @(posedge cs_n) begin
-        qmode = 0;
-        if (bitcnt != 0 && bytecnt > 0 && cmd != 8'h6B) begin
+        driving = 0;
+        if (bitcnt != 0 && !(in_data && data_out)) begin
             violations = violations + 1;
             $display("[spi_nor_model] CS# raised mid-byte (cmd %02x)", cmd);
         end
@@ -185,7 +263,7 @@ module spi_nor_model #(
                     end
                     wel = 0; busy_dur = 5000.0; -> ev_busy;
                 end
-                8'h02: if (wel && bytecnt > 4) begin
+                8'h02, 8'h32: if (wel && bytecnt > 4) begin
                     if ((sr1 & 8'h1C) == 0) begin
                         for (i = 0; i < pn; i = i + 1)
                             mem[(addr & ~32'hFF) | ((addr + i) & 32'hFF)] =

@@ -155,7 +155,14 @@ nsprog web
    - Linux 需要 udev 规则：`SUBSYSTEM=="usb", ATTR{idVendor}=="0403", MODE="0666"`。
 2. 断电，按 [wiring.md](wiring.md) 第 4 节接线。
 3. 两根 USB 都插上，运行 `nsprog info`，应显示 `link FT232H`。也可以用 `-p ft232h` 强制指定。
-4. （可选，更快）同步 FIFO：`nsprog -p ft232h-sync selftest`。通过后读写都加 `-p ft232h-sync`，网页里选 “FT232H 同步 FIFO”。这个模式只在仿真里验证过，不稳定就回到 `-p ft232h`。
+4. （可选，更快）同步 FIFO：先调一次时钟相位，再自检：
+
+   ```bash
+   nsprog -p ft232h-sync ft232h-tune    # 扫描 16 档相位，取可用窗口中点并保存（需固件 1.3）
+   nsprog -p ft232h-sync selftest
+   ```
+   `ft232h-tune` 会打印每档相位的结果和一行 `####....########` 图，`#` 越多余量越大；少于 4 档说明线太长或地线不够。结果保存在 `~/.nsprog/ft232h.json`，之后每次用 `-p ft232h-sync` 连接都会自动设置。换了线或模块就重新跑一次；也可以 `--phase N` 手动指定。试到坏相位时 FPGA 1 秒后自己退回，不会失联。
+   通过后读写都加 `-p ft232h-sync`，网页里选 “FT232H 同步 FIFO”。这个模式只在仿真里验证过，不稳定就回到 `-p ft232h`。
 
 ## 8.1 提速选项
 
@@ -163,10 +170,14 @@ nsprog web
 |---|---|---|
 | `--nand-timing safe` | 默认，读周期约 185 ns | 杜邦线、第一次用 |
 | `--nand-timing medium` / `fast` | 111 ns / 74 ns（fast 总线上限 13.5 MB/s） | 线短（< 10 cm）、读两遍结果一致 |
+| `--nand-timing turbo` | 55 ns（总线上限 18 MB/s，需固件 1.3 的 54 MHz 时钟） | 线很短、ONFI 时序模式 ≥ 4 的芯片 |
 | `--nand-timing auto` | 按 ONFI 参数页里的时序模式自动选 | ONFI 芯片 |
-| `--spi-quad auto` | 默认；芯片已经打开 QE 位时用 `6Bh` 四线读 | — |
+| `--spi-io auto` | 默认；SPI NOR 按 SFDP 选最快的读法（1-4-4 > 1-1-4 > 1-2-2 > 1-1-2），SPI NAND 用单线 | — |
+| `--spi-io single/dual/dual-io/quad/quad-io` | 指定读法：`3Bh`/`BBh`/`6Bh`/`EBh`（双线需固件 1.3） | 某种读法不稳定时退回 |
+| `--spi-quad auto` | 默认；四线读只在 QE 位已打开时使用（GigaDevice / 旺宏 SPI NAND 会自动打开） | — |
 | `--spi-quad on` | 临时打开 QE 位，读完恢复原值 | 想让 SPI NOR 读得更快 |
-| `--spi-mhz 13.5` | SPI 最高时钟 | 线短、芯片支持 |
+| `--spi-quad-write` | 用 `32h` 四线写（SPI NOR 页编程 / SPI NAND 载入缓存，需固件 1.3） | 大量写入 |
+| `--spi-mhz 27` | SPI 最高时钟（固件 1.3；之前最高 13.5） | 线短、芯片支持 |
 
 只有配合 FT232H 才看得出区别：串口链路本身只有约 290 KB/s。
 

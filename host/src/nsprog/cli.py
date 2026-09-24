@@ -13,7 +13,7 @@ from typing import Optional
 
 from . import __version__, chipdb, jobs
 from .device import connect
-from .flash import FlashDriver, FlashError, ParallelNand, SpiNor, detect, set_spi_clock
+from .flash import FlashDriver, FlashError, ParallelNand, SpiNand, SpiNor, detect, set_spi_clock
 
 log = logging.getLogger("nsprog")
 
@@ -60,8 +60,8 @@ def _int(v: str) -> int:
 
 
 # ----------------------------------------------------------------- helpers
-def _open(args):
-    dev = connect(args.port, negotiate=not args.no_fast_uart)
+def _open(args, ft_phase=True):
+    dev = connect(args.port, negotiate=not args.no_fast_uart, ft_phase=ft_phase)
     info = dev.info
     log.info("programmer: gateware %s on %s (link %s)", info.gw_version, dev.link.name,
              "FT232H" if info.port else "UART")
@@ -94,6 +94,11 @@ def _target(args, dev) -> FlashDriver:
         log.info("NAND bus timing: %s", prof)
     if isinstance(drv, SpiNor):
         drv.quad = args.spi_quad
+        drv.io = args.spi_io
+        drv.quad_write = args.spi_quad_write
+    elif isinstance(drv, SpiNand):
+        drv.io = "single" if args.spi_io == "auto" else args.spi_io
+        drv.quad_write = args.spi_quad_write
     print(drv.describe(), file=sys.stderr)
     return drv
 
@@ -403,6 +408,43 @@ def cmd_ft232h_setup(args):
     return 0
 
 
+def cmd_ft232h_tune(args):
+    """Find the working window of the sync FIFO clock phase and save its middle."""
+    from . import ft232h as F
+
+    dev = _open(args, ft_phase=False)               # measure from the power-up phase
+    try:
+        if not F.phase_supported(dev):
+            print("gateware %s has no adjustable FT232H clock phase (needs 1.3; see 'nsprog flash-fpga')"
+                  % dev.info.gw_version)
+            return 1
+        if args.phase is not None:
+            err = F.set_phase(dev, args.phase, args.rounds)
+            if err:
+                print("phase %d does not work: %s" % (args.phase, err))
+                return 1
+            best = args.phase
+            print("phase %d works" % best)
+        else:
+            def show(ph, err):
+                print("phase %2d (%5.1f deg): %s" % (ph, ph * 22.5, "OK" if err is None else err))
+            rep = F.tune(dev, args.rounds, progress=show)
+            print(rep.summary())
+            if rep.best is None:
+                print("the sync FIFO link failed at every phase: check the FT232H wiring "
+                      "(docs/troubleshooting.md) or use port 'ft232h' (async)")
+                return 1
+            if len(rep.window) < 4:
+                print("warning: narrow window; shorten the FT232H wires and add ground wires")
+            best = rep.best
+        if not args.no_save:
+            F.save_phase(dev.link.name, best)
+            print("saved: 'ft232h-sync' connections now use phase %d" % best)
+        return 0
+    finally:
+        dev.close()
+
+
 # ----------------------------------------------------------------- offline tools
 def _geometry(args):
     from .image import Geometry
@@ -646,11 +688,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="bad-block handling (default: %s)" % (bb_default or "skip"))
         sp.add_argument("--no-rb", action="store_true", help="do not use R/B#; poll the status register")
         sp.add_argument("--ecc", action="store_true", help="SPI NAND: enable on-die ECC (default: raw)")
-        sp.add_argument("--spi-mhz", type=float, default=6.75, help="SPI clock (default 6.75 MHz, max 13.5)")
+        sp.add_argument("--spi-mhz", type=float, default=6.75,
+                        help="SPI clock (default 6.75 MHz; max 27 MHz with gateware 1.3, 13.5 before)")
         sp.add_argument("--spi-quad", choices=["off", "auto", "on"], default="auto",
                         help="SPI NOR 1-1-4 quad read: auto = only if QE is already set, "
                              "on = set QE for the read and restore it (default auto)")
-        sp.add_argument("--nand-timing", choices=["safe", "medium", "fast", "auto"], default="safe",
+        sp.add_argument("--spi-io", choices=["auto", "single", "dual", "dual-io", "quad", "quad-io"],
+                        default="auto",
+                        help="SPI read bus: dual = 1-1-2, dual-io = 1-2-2, quad = 1-1-4, quad-io = 1-4-4; "
+                             "auto = fastest the chip announces (SPI NOR) / single (SPI NAND)")
+        sp.add_argument("--spi-quad-write", action="store_true",
+                        help="program with 32h on four lines (SPI NOR: needs QE; gateware >= 1.3)")
+        sp.add_argument("--nand-timing", choices=["safe", "medium", "fast", "turbo", "auto"], default="safe",
                         help="parallel NAND bus timing; faster needs short wires (default safe)")
         sp.add_argument("--allow-1v8", action="store_true",
                         help="allow 1.8V parts (only with a level shifter)")
@@ -733,6 +782,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="also change the USB PID so the macOS FTDI serial driver leaves it alone")
     sp.add_argument("--dry-run", action="store_true")
     sp.set_defaults(func=cmd_ft232h_setup)
+
+    sp = sub.add_parser("ft232h-tune", help="sweep the sync FIFO clock phase (use with -p ft232h-sync) "
+                                            "and save the middle of the working window")
+    sp.add_argument("--rounds", type=int, default=4, help="test rounds per phase (1 KB echoes each)")
+    sp.add_argument("--phase", type=int, choices=range(16), metavar="0-15",
+                    help="set and save this phase instead of sweeping")
+    sp.add_argument("--no-save", action="store_true", help="do not remember the result")
+    sp.set_defaults(func=cmd_ft232h_tune)
 
     def geo_opts(sp):
         sp.add_argument("-c", "--chip", help="take page/OOB/pages-per-block from a chip database entry")

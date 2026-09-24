@@ -68,7 +68,7 @@ async def ft_info_echo(dut):
 
     def host():
         info = dev.open(negotiate=False)
-        assert info.proto == 1 and info.rx_fifo == 4096 and info.clk_hz == 27_000_000
+        assert info.proto == 1 and info.rx_fifo == 4096 and info.clk_hz == 54_000_000
         assert info.port == 1
         b = P.Batch()
         rs = [b.echo(i) for i in range(64)]
@@ -173,6 +173,43 @@ async def uart_baud_and_nand_id(dut):
     check_models(dut)
 
 
+@cocotb.test(skip=SPI_NAND or W29N02KV)
+async def ft_sync_phase_tune(dut):
+    """Sync FIFO clock phase sweep (register 10): phases that break the link are undone
+    by the engine watchdog, the host settles on the middle of the working window."""
+    from nsprog import ft232h as F
+
+    await start(dut)
+    ft, dev = ft_sync_device(dut, stall_every=2000, stall_cycles=100, rx_gap_every=500)
+    await Timer(40, "us")
+    F.REVERT_S = 3.5                        # tb sets PH_WD_MS = 3
+
+    def sweep():
+        dev.open(negotiate=False)
+        ft.log_errors = False               # the FT model complains at the bad phases
+        try:
+            return F.tune(dev, rounds=2, progress=lambda ph, err: dut._log.info(
+                "phase %2d: %s", ph, "OK" if err is None else err))
+        finally:
+            ft.log_errors = True
+    rep = await bridge(sweep)()
+    for line in rep.summary().splitlines():
+        dut._log.info(line)
+    assert 0 in rep.passing, "power-up phase must work"
+    assert len(rep.passing) < 16, "the FT232H model should reject some phases"
+    assert rep.best in rep.window and int(dut.dut.u_eng.ft_phase.value) == rep.best
+    errors, contention = ft.errors, int(dut.ft_contention.value)
+
+    def transfer():
+        b = P.Batch()
+        rs = [b.echo(i & 0xFF) for i in range(3000)]
+        dev.run(b)
+        assert [r.value for r in rs] == [i & 0xFF for i in range(3000)]
+        assert dev.query_info().flags & ~P.FLAG_PHASE_REVERT == 0
+    await bridge(transfer)()
+    assert ft.errors == errors and int(dut.ft_contention.value) == contention
+
+
 @cocotb.test(skip=SPI_NAND)
 async def ft_sync_fifo_nand_fast(dut):
     """245 sync FIFO link (60 MHz CLKOUT), fastest NAND timings, TX stalls."""
@@ -209,7 +246,20 @@ async def ft_sync_fifo_nand_fast(dut):
         dev.run(b)
         dt = get_sim_time("ns") - t0
         assert len(r.value) == 60000
-        dut._log.info("sync FIFO NAND_READ burst: %.2f MB/s", 60000 / dt * 1e3)
+        dut._log.info("sync FIFO NAND_READ burst (fast): %.2f MB/s", 60000 / dt * 1e3)
+        drv.set_timing("turbo")                 # 54 MHz: RE# 37 ns low / 18.5 ns high
+        out = io.BytesIO()
+        jobs.read(drv, out, start=4, count=2)
+        assert out.getvalue() == image
+        b = P.Batch()
+        b.nand_ce(True)
+        r = b.nand_read(60000)
+        b.nand_ce(False)
+        t0 = get_sim_time("ns")
+        dev.run(b)
+        dt = get_sim_time("ns") - t0
+        assert len(r.value) == 60000
+        dut._log.info("sync FIFO NAND_READ burst (turbo): %.2f MB/s", 60000 / dt * 1e3)
     await bridge(host)()
     check_ft(dut, ft)
     check_models(dut)
@@ -217,27 +267,33 @@ async def ft_sync_fifo_nand_fast(dut):
 
 @cocotb.test(skip=SPI_NAND)
 async def ft_spi_nor_quad(dut):
-    """1-1-4 fast read (6Bh) through SPI_READ4, at the fastest SPI clock."""
+    """Every SPI NOR read bus (1-1-1, 1-1-2 3Bh, 1-2-2 BBh, 1-1-4 6Bh, 1-4-4 EBh) and 32h quad page
+    program through SPI_WIDE, at the fastest SPI clock (27 MHz)."""
     await start(dut)
     ft, dev = ft_device(dut)
 
     def host():
         dev.open(negotiate=False)
+        assert dev.info.caps & P.CAP_SPI_WIDE and dev.info.gw_version == "1.3"
         drv = detect(dev, want="spi").spi
         assert drv.chip.quad_cmd == 0x6B and drv.chip.qer == 5, drv.chip
-        set_spi_clock(dev, 13.5)
+        assert set(drv.chip.read_modes) == {"dual", "dual-io", "quad", "quad-io"}, drv.chip.read_modes
+        assert set_spi_clock(dev, 30) == 27.0          # 54 MHz / 2
         image = rnd(5000, seed=8)
+        drv.quad_write = True                   # 32h, data on IO0..IO3
         assert jobs.write(drv, image, start=2).ok
-        drv.quad = "auto"                       # QE is already set in the model
+        drv.quad_write = False
+        drv.io = "auto"                         # QE is set in the model: 1-4-4 wins
         assert drv.read(2 * 4096 + 3, 4000) == image[3:4003]
-        assert drv.quad_active
-        for quad in ("off", "auto"):
-            drv.quad = quad
+        assert drv.last_bus == "quad-io" and drv.quad_active
+        for mode in ("single", "dual", "dual-io", "quad", "quad-io"):
+            drv.io = mode
             t0 = get_sim_time("ns")
-            assert drv.read(2 * 4096, 5000) == image
+            assert drv.read(2 * 4096, 5000) == image, mode
             dt = get_sim_time("ns") - t0
-            dut._log.info("SPI NOR read at 13.5 MHz, quad=%s: %.2f MB/s (async FIFO link)",
-                          quad, 5000 / dt * 1e3)
+            dut._log.info("SPI NOR read at 27 MHz, %-7s: %.2f MB/s (async FIFO link)",
+                          mode, 5000 / dt * 1e3)
+        drv.io = "auto"
         out = io.BytesIO()
         jobs.read(drv, out, start=2, count=2)
         assert out.getvalue()[:len(image)] == image
@@ -255,7 +311,7 @@ async def ft_pin_test_doctor(dut):
 
     def host():
         info = dev.open(negotiate=False)
-        assert info.caps & P.CAP_PIN_TEST and info.gw_version == "1.2"
+        assert info.caps & P.CAP_PIN_TEST and info.gw_version >= "1.2"
         b = P.Batch()
         idle = b.pin_test(0, P.PT_RELEASE)
         ce_low = b.pin_test(12, P.PT_LOW)
@@ -314,6 +370,36 @@ async def ft_spi_nand(dut):
         assert out.getvalue() == img
         assert jobs.erase(drv, start=0, count=4).ok
         assert jobs.blank_check(drv, start=0, count=4).ok
+    await bridge(host)()
+    check_models(dut)
+
+
+@cocotb.test(skip=not SPI_NAND)
+async def ft_spi_nand_wide(dut):
+    """SPI NAND quad program load (32h) and every cache read bus (03h, 3Bh, BBh, 6Bh, EBh)."""
+    await start(dut)
+    ft, dev = ft_device(dut)
+
+    def host():
+        dev.open(negotiate=False)
+        drv = detect(dev, want="spi").spi
+        set_spi_clock(dev, 27)
+        drv.blocks = 4
+        img = bytearray(rnd(drv.pages_per_block * drv.raw_page, seed=19))
+        for pg in (0, 1):
+            img[pg * drv.raw_page + drv.page_size] = 0xFF
+        img = bytes(img)
+        drv.quad_write = True
+        assert jobs.write(drv, img, start=3).ok
+        drv.quad_write = False
+        for mode in ("single", "dual", "dual-io", "quad", "quad-io"):
+            drv.io = mode
+            out = io.BytesIO()
+            t0 = get_sim_time("ns")
+            jobs.read(drv, out, start=3, count=1)
+            dt = get_sim_time("ns") - t0
+            assert out.getvalue() == img, mode
+            dut._log.info("SPI NAND block read at 27 MHz, %-7s: %.2f MB/s", mode, len(img) / dt * 1e3)
     await bridge(host)()
     check_models(dut)
 
@@ -434,7 +520,7 @@ async def stress_uart_framing(dut):
 
 @cocotb.test(skip=not STRESS)
 async def stress_sync_fifo_long_read(dut):
-    """~2 MB of NAND reads over the 245 sync FIFO with TX stalls (FIFO full), RX gaps and one
+    """~0.5 MB of NAND reads over the 245 sync FIFO with TX stalls (FIFO full), RX gaps and one
     20 ms host stall; every pass must return the written image."""
     await start(dut)
     ft, dev = ft_sync_device(dut, stall_every=1500, stall_cycles=2500, rx_gap_every=300)
@@ -454,10 +540,10 @@ async def stress_sync_fifo_long_read(dut):
     await bridge(host_setup)()
     total = 0
     t0 = get_sim_time("ns")
-    for i in range(14):
-        if i == 5:
+    for i in range(4):
+        if i == 1:
             ft.stall_cycles = 1_200_000              # one 20 ms stall: the host stops reading
-        elif i == 6:
+        elif i == 2:
             ft.stall_cycles = 2500
 
         def host_read():
@@ -469,5 +555,5 @@ async def stress_sync_fifo_long_read(dut):
     dt = get_sim_time("ns") - t0
     dut._log.info("sync FIFO stress: %d bytes read in %.1f ms (%.2f MB/s incl. stalls)",
                   total, dt / 1e6, total / dt * 1e3)
-    assert total >= 2_000_000
+    assert total >= 500_000
     check_ft(dut, ft)

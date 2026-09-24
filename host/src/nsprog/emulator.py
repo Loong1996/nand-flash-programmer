@@ -235,9 +235,11 @@ def build_sfdp(size_bytes: int, four_byte: bool = False) -> bytes:
     sfdp[8:16] = bytes([0x00, 0x06, 0x01, 16, 0x30, 0x00, 0x00, 0xFF])
     dw = [0xFFFFFFFF] * 16
     addr_bits = 0b10 if four_byte else 0b00
-    dw[0] = 0xFF00_0000 | (1 << 22) | (0x20 << 8) | (addr_bits << 17) | 0b01 | 0xE0
+    # fast reads: bit 16 1-1-2, bit 20 1-2-2, bit 21 1-4-4, bit 22 1-1-4
+    dw[0] = 0xFF00_0000 | (0b0111_0001 << 16) | (0x20 << 8) | (addr_bits << 17) | 0b01 | 0xE0
     dw[1] = size_bytes * 8 - 1
-    dw[2] = 0x6B08_FFFF                                         # 1-1-4 read 6Bh, 8 dummy clocks
+    dw[2] = 0x6B08_EB44         # 1-1-4 6Bh, 8 dummy clocks; 1-4-4 EBh, 2 mode + 4 dummy clocks
+    dw[3] = 0xBB80_3B08         # 1-2-2 BBh, 4 mode clocks; 1-1-2 3Bh, 8 dummy clocks
     dw[14] = 0xFFDF_FFFF                                        # QER 101b: QE = SR2 bit 1
     dw[7] = (0x52 << 24) | (15 << 16) | (0x20 << 8) | 12      # 4K 0x20, 32K 0x52
     dw[8] = 0x0000_0000 | (0xD8 << 8) | 16                      # 64K 0xD8
@@ -279,6 +281,11 @@ class SpiNorModel:
             a = (a << 8) | x
         return a % self.size
 
+    #: read opcode -> (mode bytes, dummy bytes) as seen byte by byte: dual / quad phases
+    #: carry the same logical bytes (EBh: 4 dummy clocks x4 = 2 bytes)
+    READS = {0x03: (0, 0), 0x0B: (0, 1), 0x5A: (0, 1), 0x3B: (0, 1), 0x6B: (0, 1),
+             0xBB: (1, 0), 0xEB: (1, 2)}
+
     def xfer(self, b, now):
         if not self.sel:
             return 0xFF
@@ -294,12 +301,12 @@ class SpiNorModel:
             return 0xFF
         if cmd == 0x9F:
             return self.jedec[(n - 1) % 3] if n else 0xFF
-        if cmd in (0x03, 0x0B, 0x5A, 0x6B):
-            if cmd == 0x6B and not self.sr2 & 0x02:
+        if cmd in self.READS:
+            if cmd in (0x6B, 0xEB) and not self.sr2 & 0x02:
                 return 0xFF                    # QE clear: IO2/IO3 are WP#/HOLD#
             alen = 3 if cmd == 0x5A else self._alen()
-            dummy = 0 if cmd == 0x03 else 1
-            k = n - alen - dummy
+            mode, dummy = self.READS[cmd]
+            k = n - alen - mode - dummy
             if k >= 1:
                 a = 0
                 for x in self.buf[1:1 + alen]:
@@ -331,7 +338,8 @@ class SpiNorModel:
                 self.sr2 = buf[2]
             self.wel = False
             self.busy_until = now + 5000
-        elif cmd == 0x02 and self.wel and len(buf) > 1 + self._alen():
+        elif cmd in (0x02, 0x32) and self.wel and len(buf) > 1 + self._alen() \
+                and (cmd == 0x02 or self.sr2 & 0x02):
             a = self._addr()
             if not (self.sr1 & 0x1C):
                 base = a & ~0xFF
@@ -406,8 +414,8 @@ class SpiNandModel:
             return 0xFF
         if cmd == 0x9F:
             return self.ids[(n - 2) % len(self.ids)] if n >= 2 else 0xFF
-        if cmd in (0x03, 0x0B):
-            hdr = 3
+        if cmd in (0x03, 0x0B, 0x3B, 0x6B, 0xBB, 0xEB):
+            hdr = 4 if cmd == 0xEB else 3         # EBh: 4 dummy clocks at x4 = 2 bytes
             if n > hdr:
                 if self.dummy_first:
                     col = (self.buf[2] << 8) | self.buf[3]
@@ -444,8 +452,8 @@ class SpiNandModel:
             row = (buf[1] << 16) | (buf[2] << 8) | buf[3]
             self.cache = bytearray(self.pages.get(row, b"\xff" * self.pb))
             self.busy_until = now + self.t_rd
-        elif cmd in (0x02, 0x84) and len(buf) >= 3:
-            if cmd == 0x02:
+        elif cmd in (0x02, 0x84, 0x32, 0x34) and len(buf) >= 3:
+            if cmd in (0x02, 0x32):
                 self.cache = bytearray(b"\xff" * self.pb)
             col = ((buf[1] << 8) | buf[2]) & 0x0FFF
             for i, d in enumerate(buf[3:]):
@@ -481,7 +489,7 @@ class Engine:
     ARGS = {P.ECHO: 1, P.PIN_TEST: 2, P.SET_REG: 3, P.DELAY_US: 2, P.SET_BAUD: 2, P.NAND_CE: 1,
             P.NAND_CMD: 1, P.NAND_ADDR: 1, P.NAND_WRITE: 2, P.NAND_READ: 2,
             P.NAND_WAIT_RB: 2, P.NAND_POLL_STATUS: 4, P.SPI_CS: 1, P.SPI_WRITE: 2,
-            P.SPI_READ: 2, P.SPI_XFER: 2, P.SPI_POLL: 1, P.SPI_READ4: 2}
+            P.SPI_READ: 2, P.SPI_XFER: 2, P.SPI_POLL: 1, P.SPI_READ4: 2, P.SPI_WIDE: 3}
     KNOWN = set(ARGS) | {P.NOP, P.INFO, P.GET_PINS}
 
     def __init__(self, nand: Optional[NandModel] = None, spi=None):
@@ -495,6 +503,7 @@ class Engine:
         self.pin_ctrl = P.PIN_CTRL_DEFAULT
         self.flags = 0
         self.last_rx = 0.0              # wall-clock time of the last received byte
+        self.clk_hz = 54_000_000        # gateware 1.3: 27 MHz crystal x2 (rPLL)
         self.regs: Dict[int, int] = {}
         # pin test: mode, selected pin, and injectable wiring faults
         self.pt_mode = 0
@@ -503,6 +512,12 @@ class Engine:
         self.stuck: dict = {}           # {test_bit: level}  (short to GND / 3V3)
         self.probe: dict = {}           # {test_bit: level}  (weak: a finger on the pin)
         self.wp_open = False            # NAND WP# wire missing: the chip stays write protected
+        # sync FIFO clock phase (register 10): the link only works at `good_phases`;
+        # an unconfirmed phase is undone after PH_WD_S (like the gateware watchdog)
+        self.ft_phase = 0
+        self.good_phases = set(range(16))
+        self.ph_prev = 0
+        self.ph_since: Optional[float] = None
 
     def pin_levels(self) -> int:
         """Pad levels of the 21 test pins in the current pin-test mode."""
@@ -576,18 +591,33 @@ class Engine:
     # -- parser
     #: like the FPGA: a partly received operation is dropped after 100 ms without bytes
     ABORT_S = 0.1
+    PH_WD_S = 1.0
+
+    @property
+    def link_ok(self) -> bool:
+        return self.ft_phase in self.good_phases
 
     def idle(self) -> None:
+        if self.ph_since is not None and time.monotonic() - self.ph_since > self.PH_WD_S:
+            self.ft_phase = self.ph_prev
+            self.ph_since = None
+            self.flags |= P.FLAG_PHASE_REVERT
+            self.inbuf.clear()
         if self.inbuf and time.monotonic() - self.last_rx > self.ABORT_S:
             self.inbuf.clear()
-            self.flags |= 2
+            self.flags |= P.FLAG_TIMEOUT
 
     def feed(self, data: bytes) -> None:
         self.idle()
         self.last_rx = time.monotonic()
+        if not self.link_ok:
+            return                      # wrong sampling phase: nothing gets through
         self.inbuf += data
-        while self._step():
+        while self.link_ok and self._step():
             pass
+        if not self.link_ok:
+            self.inbuf.clear()
+            self.out.clear()
 
     def _need(self, op: int, avail: Union[bytes, bytearray]) -> Optional[int]:
         """Total length of the op at the head of the buffer, or None if unknown yet."""
@@ -606,6 +636,10 @@ class Engine:
             if len(avail) < 3:
                 return None
             n = 3 + struct.unpack_from("<H", avail, 1)[0]
+        elif op == P.SPI_WIDE:
+            if len(avail) < 4:
+                return None
+            n = 4 + (0 if avail[3] & 4 else struct.unpack_from("<H", avail, 1)[0])
         return n
 
     def _step(self) -> bool:
@@ -630,11 +664,16 @@ class Engine:
         elif op == P.ECHO:
             self.out.append(f[1])
         elif op == P.INFO:
-            self.out += P.INFO_MAGIC + bytes([1, 1, 2, 1]) + struct.pack("<I", 27_000_000) + \
-                bytes([12, 0xFB, self.flags, 0])
+            self.out += P.INFO_MAGIC + bytes([1, 1, 3, 1]) + struct.pack("<I", self.clk_hz) + \
+                bytes([12, 0xFF, self.flags, 0])
             self.flags = 0
+            self.ph_since = None
         elif op == P.SET_REG:
             self.regs[f[1]] = u16(2)
+            if f[1] == P.REG_FT_PHASE:
+                self.ph_prev = self.ph_prev if self.ph_since is not None else self.ft_phase
+                self.ft_phase = f[2] & 15
+                self.ph_since = time.monotonic()
             if f[1] == P.REG_PIN_CTRL:
                 self.pin_ctrl = f[2]
                 if self.nand is not None:
@@ -702,6 +741,13 @@ class Engine:
         elif op == P.SPI_XFER:
             for b in f[3:]:
                 self.out.append(self._spi(b))
+        elif op == P.SPI_WIDE:                  # the models see logical bytes; width is irrelevant here
+            if f[3] & 4:
+                for _ in range(u16(1)):
+                    self.out.append(self._spi(0xFF))
+            else:
+                for b in f[4:]:
+                    self._spi(b)
         elif op == P.SPI_POLL:
             k = f[1]
             cmd, mask, val, tmo = f[2:2 + k], f[2 + k], f[3 + k], u16(4 + k)
@@ -766,6 +812,10 @@ class EmulatorLink(Link):
 
     def read(self, n: int, timeout: float) -> bytes:
         self.engine.idle()
+        if not self.engine.link_ok:
+            self.engine.out.clear()
+            time.sleep(min(timeout, 0.02))
+            return b""
         if not self.engine.out and self.engine.inbuf and timeout > 0:
             # a partial operation is pending: behave like a real link and let time pass
             time.sleep(min(timeout, self.engine.ABORT_S + 0.01))

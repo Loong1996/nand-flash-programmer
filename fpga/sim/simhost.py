@@ -113,6 +113,7 @@ class FtSyncModel:
         self.stall_cycles = stall_cycles
         self.rx_gap_every = rx_gap_every
         self.errors = 0
+        self.log_errors = True
         self.oe_prev = 1
         dut.ft_rxf_n.value = 1
         dut.ft_txe_n.value = 0
@@ -122,7 +123,8 @@ class FtSyncModel:
 
     def _err(self, msg):
         self.errors += 1
-        self.dut._log.error("FT sync: %s", msg)
+        if self.log_errors:
+            self.dut._log.error("FT sync: %s", msg)
 
     async def _run(self):
         d = self.dut
