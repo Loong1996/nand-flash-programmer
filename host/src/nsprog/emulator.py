@@ -573,7 +573,7 @@ class Engine:
         while self._step():
             pass
 
-    def _need(self, op: int, avail: bytes) -> Optional[int]:
+    def _need(self, op: int, avail: Union[bytes, bytearray]) -> Optional[int]:
         """Total length of the op at the head of the buffer, or None if unknown yet."""
         if op not in self.KNOWN:
             return 1

@@ -68,7 +68,7 @@ docs/                文档
 
 ```bash
 pip install -e "host[test]" && pytest host                     # 上位机测试（用软件模拟器）
-pip install ruff mypy && ruff check host && (cd host && mypy src packaging)   # 代码检查
+pip install ruff "mypy==2.3.1" && ruff check host && (cd host && mypy src packaging)   # 代码检查
 python fpga/sim/run_sim.py                                     # RTL 仿真（需要 iverilog、cocotb）
 pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula
 python fpga/sim/run_sim.py gate                                # 门级仿真（综合后网表）

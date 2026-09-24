@@ -25,7 +25,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -e "host[test]" ruff mypy types-pyserial
+      - run: pip install -e "host[test]" ruff "mypy==2.3.1" types-pyserial
       - run: ruff check host/src host/tests host/packaging
         working-directory: .
       - run: mypy src packaging
