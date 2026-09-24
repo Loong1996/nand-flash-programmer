@@ -20,7 +20,14 @@ module tb;
     wire [7:0] ft_d;
     reg  ft_rxf_n = 1'b1;
     reg  ft_txe_n = 1'b1;
-    wire ft_rd_n, ft_wr_n;
+    wire ft_rd_n, ft_wr_n, ft_oe_n;
+    // FT232H CLKOUT: 60 MHz while ft_clk_en is set (245 sync FIFO mode)
+    reg  ft_clk_en = 1'b0;
+    reg  ft_clkout = 1'b0;
+    always @(posedge ft_clk_en)
+        while (ft_clk_en) begin
+            #8.333 ft_clkout = ~ft_clkout;
+        end
     reg  [7:0] ft_d_host = 8'h00;
     reg  ft_d_host_oe = 1'b0;
     assign ft_d = ft_d_host_oe ? ft_d_host : 8'bz;
@@ -28,6 +35,7 @@ module tb;
     // Board / wiring pull-ups (the design also enables FPGA-internal ones)
     pullup (nand_rb_n);
     pullup (spi_io1);
+    pullup (ft_oe_n);
     genvar gi;
     generate
         for (gi = 0; gi < 8; gi = gi + 1) begin : pu
@@ -46,7 +54,7 @@ module tb;
         .spi_io2(spi_io2), .spi_io3(spi_io3),
         .ft_d(ft_d), .ft_rxf_n(ft_rxf_n), .ft_txe_n(ft_txe_n),
         .ft_rd_n(ft_rd_n), .ft_wr_n(ft_wr_n),
-        .ft_clkout(1'b0), .ft_oe_n(1'b1), .ft_siwu_n(1'b1)
+        .ft_clkout(ft_clkout), .ft_oe_n(ft_oe_n), .ft_siwu_n(1'b1)
     );
 
     nand_model u_nand (
@@ -66,7 +74,16 @@ module tb;
     );
 `endif
 
-    // Bus contention check on the FT232H data bus
+    // Bus contention checks on the FT232H data bus
+    integer ft_contention = 0;
     always @(negedge ft_rd_n)
-        if (dut.ft_d_oe) $display("[tb] ERROR: FPGA drives ft_d while RD# is low");
+        if (!dut.use_sync && dut.fta_d_oe) begin
+            ft_contention = ft_contention + 1;
+            $display("[tb] ERROR: FPGA drives ft_d while RD# is low");
+        end
+    always @(posedge ft_clkout)
+        if (dut.use_sync && dut.fts_d_oe && !ft_oe_n) begin
+            ft_contention = ft_contention + 1;
+            $display("[tb] ERROR: FPGA drives ft_d while OE# is low");
+        end
 endmodule

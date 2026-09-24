@@ -245,7 +245,9 @@ def connect(port: Optional[str] = None, *, emulate: Optional[str] = None,
     """Open a programmer.
 
     ``port``: serial port path, ``"ft232h"``/``ftdi://...`` for the FT232H
-    FIFO, or None to auto-detect (FT232H first, then likely serial ports).
+    async FIFO, ``"ft232h-sync"`` (or a URL ending in ``+sync``) for the 245
+    synchronous FIFO, or None to auto-detect (FT232H first, then likely serial
+    ports).
     ``emulate``: use the built-in software emulator (e.g. ``"nand"``,
     ``"spinor"``, ``"spinand"``, ``"all"``).
     """
@@ -259,9 +261,18 @@ def connect(port: Optional[str] = None, *, emulate: Optional[str] = None,
         dev.open(negotiate=False)
         return dev
 
-    if port and (port == "ft232h" or port.startswith("ftdi://")):
-        dev = Device(FtdiLink(None if port == "ft232h" else port))
-        dev.open(negotiate=False)
+    if port and (port in ("ft232h", "ft232h-sync") or port.startswith("ftdi://")):
+        sync = port == "ft232h-sync" or port.endswith("+sync")
+        url = None if port.startswith("ft232h") else port[:-5] if port.endswith("+sync") else port
+        dev = Device(FtdiLink(url, sync=sync))
+        try:
+            dev.open(negotiate=False)
+        except Exception as e:
+            dev.close()
+            if sync:
+                raise LinkError("%s. In sync FIFO mode the FPGA needs CLKOUT (FT232H AC5) on "
+                                "pin 36 and gateware >= 1.1; try port 'ft232h' (async)" % e)
+            raise
         return dev
 
     if port:

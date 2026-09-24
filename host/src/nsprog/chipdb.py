@@ -35,6 +35,30 @@ def _int(v: str) -> Optional[int]:
     return int(v, 0)
 
 
+_VOLTAGE_RULES = [
+    (r"W29N\d+[GK]V", 3.3), (r"W29N\d+[GK]Z", 1.8),
+    (r"^K9\w{5}U", 3.3), (r"^K9\w{5}[RQ]", 1.8),
+    (r"^MT29F\d+G(08|16)AB[AC]", 3.3), (r"^MT29F\d+G(08|16)AB[BD]", 1.8),
+    (r"^MX30LF", 3.3), (r"^MX30UF", 1.8),
+    (r"^S34ML", 3.3), (r"^S34MS", 1.8),
+    (r"^T[CH]58NVG", 3.3), (r"^T[CH]58NYG", 1.8),
+    (r"^F59L", 3.3), (r"^F59D", 1.8),
+    (r"^HY27U", 3.3), (r"^HY27S", 1.8),
+]
+
+
+def guess_voltage(name: str) -> float:
+    """Supply voltage from vendor part-number conventions (0 = unknown)."""
+    import re
+
+    n = (name or "").upper().replace(" ", "")
+    for part in [n] + n.split("WINBOND")[1:] + n.split("MICRON")[1:]:
+        for pat, v in _VOLTAGE_RULES:
+            if re.search(pat, part):
+                return v
+    return 0.0
+
+
 def _volts(v: float) -> str:
     return "%.1fV" % v if v else "voltage unknown (check datasheet)"
 
@@ -169,6 +193,9 @@ class SpiNorChip:
     addr_bytes: int = 3
     unlock_cmd: Optional[int] = None
     notes: str = ""
+    quad_cmd: Optional[int] = None      # 1-1-4 fast read (from SFDP)
+    quad_dummy: int = 8
+    qer: int = 0                        # SFDP quad enable requirement
 
     @property
     def linear(self) -> bool:
@@ -252,6 +279,9 @@ class SpiNandChip:
     read_dummy_first: bool = False
     voltage: float = 3.3
     verified: bool = False
+    readid: str = "opcode_dummy"    # opcode | opcode_dummy | opcode_addr (Linux naming)
+    source: str = "nsprog"
+    note: str = ""
     t_rd_ms: int = 2
     t_prog_ms: int = 5
     t_bers_ms: int = 20
@@ -274,28 +304,47 @@ class SpiNandChip:
             self.pages_per_block, self.blocks, self.voltage,
             "" if self.verified else " (unverified entry)")
 
+    def match(self, raw9f: bytes, id_after_addr: bytes) -> bool:
+        """``raw9f``: bytes clocked right after 9Fh; ``id_after_addr``: after 9Fh 00h."""
+        n = len(self.ids)
+        if self.readid == "opcode":
+            return raw9f[:n] == self.ids
+        if self.readid == "opcode_addr":
+            return id_after_addr[:n] == self.ids
+        return id_after_addr[:n] == self.ids or raw9f[1:1 + n] == self.ids
+
 
 @lru_cache(maxsize=None)
 def spi_nand_chips() -> List[SpiNandChip]:
+    """Linux kernel table first (verified in the field), then our own extras."""
     out = []
-    for r in _rows("spi_nand.csv"):
-        out.append(SpiNandChip(
+    seen = set()
+    for r in _rows("spi_nand_linux.csv"):
+        chip = SpiNandChip(
             name=r[0], ids=_hexbytes(r[1]), page_size=int(r[2]), spare_size=int(r[3]),
+            pages_per_block=int(r[4]), blocks=int(r[5]), plane_bit=r[6] == "1",
+            readid=r[7], voltage=float(r[8]), verified=True, source="linux",
+            note=r[10] if len(r) > 10 else "")
+        out.append(chip)
+        seen.add(chip.ids)
+    for r in _rows("spi_nand.csv"):
+        ids = _hexbytes(r[1])
+        if ids in seen:
+            continue
+        out.append(SpiNandChip(
+            name=r[0], ids=ids, page_size=int(r[2]), spare_size=int(r[3]),
             pages_per_block=int(r[4]), blocks=int(r[5]), plane_bit=r[6] == "1",
             read_dummy_first=r[7] == "1", voltage=float(r[8]), verified=r[9] == "1"))
     return out
 
 
-def find_spi_nand(raw_id: bytes) -> Optional[SpiNandChip]:
-    """Match the bytes read after 9Fh. Chips differ in whether a dummy byte
-    precedes the ID, so both alignments are tried."""
+def find_spi_nand(raw9f: bytes, id_after_addr: bytes = b"") -> Optional[SpiNandChip]:
+    """Match an SPI NAND by its ID (longest ID wins)."""
     best = None
     for chip in spi_nand_chips():
-        for off in (1, 0, 2):
-            if raw_id[off:off + len(chip.ids)] == chip.ids:
-                if best is None or len(chip.ids) > len(best.ids):
-                    best = chip
-                break
+        if chip.match(raw9f, id_after_addr or raw9f[1:]):
+            if best is None or len(chip.ids) > len(best.ids):
+                best = chip
     return best
 
 
@@ -311,5 +360,5 @@ def all_chips() -> List[dict]:
                     "source": c.source, "id": c.ids.hex().upper(), "detail": c.describe()})
     for c in spi_nand_chips():
         out.append({"type": "spinand", "name": c.name, "size": c.total_size, "voltage": c.voltage,
-                    "source": "nsprog", "id": c.ids.hex().upper(), "detail": c.describe()})
+                    "source": c.source, "id": c.ids.hex().upper(), "detail": c.describe()})
     return out

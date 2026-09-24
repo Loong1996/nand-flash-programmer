@@ -231,8 +231,10 @@ def build_sfdp(size_bytes: int, four_byte: bool = False) -> bytes:
     sfdp[8:16] = bytes([0x00, 0x06, 0x01, 16, 0x30, 0x00, 0x00, 0xFF])
     dw = [0xFFFFFFFF] * 16
     addr_bits = 0b10 if four_byte else 0b00
-    dw[0] = 0xFF00_0000 | (0x20 << 8) | (addr_bits << 17) | 0b01 | 0xE0
+    dw[0] = 0xFF00_0000 | (1 << 22) | (0x20 << 8) | (addr_bits << 17) | 0b01 | 0xE0
     dw[1] = size_bytes * 8 - 1
+    dw[2] = 0x6B08_FFFF                                         # 1-1-4 read 6Bh, 8 dummy clocks
+    dw[14] = 0xFFDF_FFFF                                        # QER 101b: QE = SR2 bit 1
     dw[7] = (0x52 << 24) | (15 << 16) | (0x20 << 8) | 12      # 4K 0x20, 32K 0x52
     dw[8] = 0x0000_0000 | (0xD8 << 8) | 16                      # 64K 0xD8
     dw[10] = 0xFFFF_FF00 | 0x81                                 # page size 256 (2^8 << 4)
@@ -288,7 +290,9 @@ class SpiNorModel:
             return 0xFF
         if cmd == 0x9F:
             return self.jedec[(n - 1) % 3] if n else 0xFF
-        if cmd in (0x03, 0x0B, 0x5A):
+        if cmd in (0x03, 0x0B, 0x5A, 0x6B):
+            if cmd == 0x6B and not self.sr2 & 0x02:
+                return 0xFF                    # QE clear: IO2/IO3 are WP#/HOLD#
             alen = 3 if cmd == 0x5A else self._alen()
             dummy = 0 if cmd == 0x03 else 1
             k = n - alen - dummy
@@ -473,7 +477,7 @@ class Engine:
     ARGS = {P.ECHO: 1, P.SET_REG: 3, P.DELAY_US: 2, P.SET_BAUD: 2, P.NAND_CE: 1,
             P.NAND_CMD: 1, P.NAND_ADDR: 1, P.NAND_WRITE: 2, P.NAND_READ: 2,
             P.NAND_WAIT_RB: 2, P.NAND_POLL_STATUS: 4, P.SPI_CS: 1, P.SPI_WRITE: 2,
-            P.SPI_READ: 2, P.SPI_XFER: 2, P.SPI_POLL: 1}
+            P.SPI_READ: 2, P.SPI_XFER: 2, P.SPI_POLL: 1, P.SPI_READ4: 2}
     KNOWN = set(ARGS) | {P.NOP, P.INFO, P.GET_PINS}
 
     def __init__(self, nand: Optional[NandModel] = None, spi=None):
@@ -554,8 +558,8 @@ class Engine:
         elif op == P.ECHO:
             self.out.append(f[1])
         elif op == P.INFO:
-            self.out += P.INFO_MAGIC + bytes([1, 1, 0, 1]) + struct.pack("<I", 27_000_000) + \
-                bytes([12, 0x1B, self.flags, 0])
+            self.out += P.INFO_MAGIC + bytes([1, 1, 1, 1]) + struct.pack("<I", 27_000_000) + \
+                bytes([12, 0x7B, self.flags, 0])
             self.flags = 0
         elif op == P.SET_REG:
             self.regs[f[1]] = u16(2)
@@ -609,7 +613,7 @@ class Engine:
         elif op == P.SPI_WRITE:
             for b in f[3:]:
                 self._spi(b)
-        elif op == P.SPI_READ:
+        elif op in (P.SPI_READ, P.SPI_READ4):
             for _ in range(u16(1)):
                 self.out.append(self._spi(0xFF))
         elif op == P.SPI_XFER:

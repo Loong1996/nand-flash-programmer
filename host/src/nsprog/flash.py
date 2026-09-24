@@ -118,9 +118,42 @@ class ParallelNand(FlashDriver):
         self.id_bytes = id_bytes
         self.onfi = onfi
         self.read_batch = max(1, 65536 // chip.raw_page)
+        self.timing = "safe"
 
     def describe(self) -> str:
         return self.chip.describe()
+
+    # bus timing -------------------------------------------------------------
+    #: T_SETUP, T_WP, T_WH, T_RP, T_REH, T_WHR, T_ADL, T_WB in 37 ns clocks.
+    TIMINGS = {
+        "safe": (2, 3, 2, 3, 2, 6, 8, 6),     # ONFI mode 0 with margin (default)
+        "medium": (1, 2, 1, 2, 1, 3, 3, 4),   # ONFI mode 1: tRC 111 ns
+        "fast": (1, 1, 1, 1, 1, 3, 3, 4),     # ONFI mode 2+: tRC 74 ns (13.5 MB/s bus)
+    }
+
+    def auto_timing(self) -> str:
+        """Fastest profile the chip's ONFI timing modes allow."""
+        modes = self.onfi.timing_modes if self.onfi else 0
+        if modes & ~0x3:
+            return "fast"
+        if modes & 0x2:
+            return "medium"
+        return "safe"
+
+    def set_timing(self, profile: str = "safe") -> str:
+        """Program the FPGA bus timing: ``safe`` | ``medium`` | ``fast`` | ``auto``.
+
+        Faster profiles need short wires; stay on ``safe`` with long dupont leads."""
+        if profile == "auto":
+            profile = self.auto_timing()
+        if profile not in self.TIMINGS:
+            raise ValueError("unknown NAND timing profile %r" % profile)
+        b = P.Batch()
+        for reg, v in enumerate(self.TIMINGS[profile]):
+            b.set_reg(P.REG_T_SETUP + reg, v)
+        self.dev.run(b)
+        self.timing = profile
+        return profile
 
     # helpers ----------------------------------------------------------------
     def _addr(self, col: int, row: int) -> bytes:
@@ -290,7 +323,7 @@ def nand_chip_from_onfi(p: OnfiParams, id_bytes: bytes) -> chipdb.NandChip:
         name=name, page_size=p.page_size, block_size=p.page_size * p.pages_per_block,
         total_size=p.page_size * p.pages_per_block * p.blocks, spare_size=p.spare_size,
         bb_mark_off=0, row_cycles=p.row_cycles, col_cycles=p.col_cycles,
-        ids=tuple(id_bytes[:5]), voltage=0.0, source="onfi")
+        ids=tuple(id_bytes[:5]), voltage=chipdb.guess_voltage(name), source="onfi")
     return chip
 
 
@@ -456,6 +489,9 @@ class SpiNor(FlashDriver):
         self.voltage = chip.voltage
         self.four = False
         self.read_batch = max(1, 65536 // chip.page_size)
+        self.quad = "auto"          # off | auto (only if QE is already set) | on (set QE)
+        self.quad_active = False
+        self._qe_restore: Optional[bool] = None
 
     def describe(self) -> str:
         return self.chip.describe()
@@ -572,34 +608,101 @@ class SpiNor(FlashDriver):
             self.dev.run(b)
             self.four = False
 
+    # quad (1-1-4) read -----------------------------------------------------
+    #: SFDP quad-enable requirement -> (status register 1 or 2, QE bit)
+    QE_BITS = {1: (2, 1), 2: (1, 6), 4: (2, 1), 5: (2, 1), 6: (2, 1)}
+
+    @property
+    def quad_capable(self) -> bool:
+        c = self.chip
+        info = self.dev.info
+        return bool(c.quad_cmd == 0x6B and c.qer in self.QE_BITS and c.quad_dummy % 8 == 0
+                    and c.status_cmd == 0x05 and info is not None and info.caps & P.CAP_QSPI)
+
+    def _qe(self) -> bool:
+        reg, bit = self.QE_BITS[self.chip.qer]
+        s1, s2 = self.status()
+        return bool((s1 if reg == 1 else s2) >> bit & 1)
+
+    def _set_qe(self, on: bool) -> None:
+        reg, bit = self.QE_BITS[self.chip.qer]
+        s1, s2 = self.status()
+        s1 &= 0xFC
+        if reg == 1:
+            s1 = (s1 | 1 << bit) if on else (s1 & ~(1 << bit))
+        else:
+            s2 = (s2 | 1 << bit) if on else (s2 & ~(1 << bit))
+        b = P.Batch()
+        self._wren(b)
+        if self.chip.qer == 6:
+            self._cmd(b, bytes([0x31, s2]))
+        elif reg == 1:
+            self._cmd(b, bytes([0x01, s1]))
+        else:
+            self._cmd(b, bytes([0x01, s1, s2]))
+        self._poll(b, 200)
+        self.dev.run(b)
+        if self._qe() != on:
+            raise FlashError("could not %s the quad-enable bit" % ("set" if on else "clear"))
+
+    def _quad_begin(self) -> None:
+        self.quad_active = False
+        if self.quad == "off" or not self.quad_capable:
+            return
+        if not self._qe():
+            if self.quad != "on":
+                return
+            self._set_qe(True)
+            self._qe_restore = False
+        self.quad_active = True
+
+    def _quad_end(self) -> None:
+        if self._qe_restore is not None:
+            restore, self._qe_restore = self._qe_restore, None
+            self._set_qe(restore)
+            self.quad_active = False
+
     # data -------------------------------------------------------------------
     def read(self, off: int, n: int) -> bytes:
-        b = P.Batch()
-        r = self._read_ops(b, off, n)
-        self.dev.run(b)
-        return r.value
+        self._quad_begin()
+        try:
+            b = P.Batch()
+            r = self._read_ops(b, off, n)
+            self.dev.run(b)
+            return r.value
+        finally:
+            self._quad_end()
 
     def _read_ops(self, b: P.Batch, off: int, n: int):
         c = self.chip
+        addr = self._abytes(self._dev_addr(off))
         b.spi_cs(True)
-        b.spi_write(bytes([c.read_cmd]) + self._abytes(self._dev_addr(off)) + b"\x00" * c.read_dummy)
-        r = b.spi_read(n)
+        if self.quad_active:
+            b.spi_write(bytes([c.quad_cmd]) + addr + b"\x00" * (c.quad_dummy // 8))
+            r = b.spi_read4(n)
+        else:
+            b.spi_write(bytes([c.read_cmd]) + addr + b"\x00" * c.read_dummy)
+            r = b.spi_read(n)
         b.spi_cs(False)
         return r
 
     def read_pages(self, first: int, count: int, oob: bool = True) -> Iterator[bytes]:
         self.enter_4byte()
-        chunk_pages = self.read_batch
-        page, end = first, first + count
-        while page < end:
-            k = min(chunk_pages, end - page)
-            b = P.Batch()
-            r = self._read_ops(b, page * self.page_size, k * self.page_size)
-            self.dev.run(b)
-            data = r.value
-            for i in range(k):
-                yield data[i * self.page_size:(i + 1) * self.page_size]
-            page += k
+        self._quad_begin()
+        try:
+            chunk_pages = self.read_batch
+            page, end = first, first + count
+            while page < end:
+                k = min(chunk_pages, end - page)
+                b = P.Batch()
+                r = self._read_ops(b, page * self.page_size, k * self.page_size)
+                self.dev.run(b)
+                data = r.value
+                for i in range(k):
+                    yield data[i * self.page_size:(i + 1) * self.page_size]
+                page += k
+        finally:
+            self._quad_end()
 
     def program_pages(self, items: Sequence[Tuple[int, bytes]]) -> List[OpResult]:
         self.enter_4byte()
@@ -713,13 +816,28 @@ def detect_nand(dev: Device, chip_name: Optional[str] = None, use_rb: bool = Tru
         return None
     onfi = ParallelNand.read_onfi(dev)
     chip = chipdb.find_nand(idb)
+    if onfi is not None:
+        # The parameter page comes from the chip itself: trust its geometry.
+        ochip = nand_chip_from_onfi(onfi, idb)
+        if chip is not None:
+            import dataclasses
+
+            same = (chip.page_size, chip.spare_size, chip.block_size, chip.total_size) == \
+                   (ochip.page_size, ochip.spare_size, ochip.block_size, ochip.total_size)
+            ochip = dataclasses.replace(ochip, name=chip.name, voltage=chip.voltage,
+                                        bb_mark_off=chip.bb_mark_off, source="nando+onfi")
+            det.messages.append("parallel NAND: %s (database + ONFI%s, ID %s)" % (
+                chip.name, "" if same else "; geometry taken from ONFI",
+                idb[:5].hex().upper()))
+        else:
+            det.messages.append("parallel NAND: %s (ONFI parameter page, ID %s)"
+                                % (ochip.name, idb[:5].hex().upper()))
+        if not ochip.voltage:
+            det.messages.append("note: supply voltage unknown - check the datasheet "
+                                "(this programmer is 3.3V only)")
+        return ParallelNand(dev, ochip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
     if chip is not None:
         det.messages.append("parallel NAND: %s (database, ID %s)" % (chip.name, idb[:5].hex().upper()))
-        return ParallelNand(dev, chip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
-    if onfi is not None:
-        chip = nand_chip_from_onfi(onfi, idb)
-        det.messages.append("parallel NAND: %s (ONFI parameter page, ID %s)"
-                            % (chip.name, idb[:5].hex().upper()))
         return ParallelNand(dev, chip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
     det.messages.append("parallel NAND: unknown chip ID %s (not in database, no ONFI); "
                         "use --chip to choose a database entry" % idb[:5].hex().upper())
@@ -764,16 +882,18 @@ def detect_spi(dev: Device, chip_name: Optional[str] = None, ecc: bool = False,
     nor = chipdb.find_spi_nor(jedec)
     sfdp = SpiNor.probe_sfdp(dev)
     if nor is None:
-        nand = None
-        for cand in chipdb.spi_nand_chips():
-            if (nand_id.value[:len(cand.ids)] == cand.ids or jedec[:len(cand.ids)] == cand.ids
-                    or jedec[1:1 + len(cand.ids)] == cand.ids):
-                if nand is None or len(cand.ids) > len(nand.ids):
-                    nand = cand
+        nand = chipdb.find_spi_nand(jedec, nand_id.value)
         if nand is not None and sfdp is None:
-            det.messages.append("SPI NAND: %s (ID %s)" % (nand.name, nand.ids.hex().upper()))
+            det.messages.append("SPI NAND: %s (%s, ID %s)" % (
+                nand.name, "Linux kernel table" if nand.source == "linux" else "database",
+                nand.ids.hex().upper()))
             if not nand.verified:
                 det.messages.append("note: %s is an unverified database entry" % nand.name)
+            if nand.note:
+                det.messages.append("note: %s" % nand.note)
+            if not nand.voltage:
+                det.messages.append("note: supply voltage of %s unknown - check the datasheet "
+                                    "(this programmer is 3.3V only)" % nand.name)
             d = SpiNand(dev, nand, ecc=ecc)
             d.setup()
             return d
@@ -808,7 +928,8 @@ def _apply_sfdp(chip: chipdb.SpiNorChip, s) -> chipdb.SpiNorChip:
         chip, total_size=s.size, erase_types=erase, block_size=small,
         erase_cmd=erase.get(small, chip.erase_cmd),
         addr_bytes=4 if s.size > 16 * 1024 * 1024 else 3,
-        page_size=s.page_size if s.page_size in (256, 512) else chip.page_size)
+        page_size=s.page_size if s.page_size in (256, 512) else chip.page_size,
+        quad_cmd=s.quad_cmd, quad_dummy=s.quad_dummy, qer=s.qer)
 
 
 def detect(dev: Device, *, nand_chip: Optional[str] = None, spi_chip: Optional[str] = None,

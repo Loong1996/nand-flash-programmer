@@ -13,6 +13,9 @@ class SfdpInfo:
     erase_types: Dict[int, int] = field(default_factory=dict)   # size -> opcode
     addr_bytes: int = 3                                          # 3, 4, or 34 (either)
     page_size: int = 256
+    quad_cmd: Optional[int] = None      # 1-1-4 fast read opcode (usually 6Bh)
+    quad_dummy: int = 8                 # dummy + mode clocks for quad_cmd
+    qer: int = 0                        # quad enable requirement (DWORD15 bits 22:20)
 
 
 def parse_header(hdr: bytes):
@@ -59,4 +62,11 @@ def parse_bfpt(raw: bytes) -> Optional[SfdpInfo]:
         info.erase_types[4096] = (dw[0] >> 8) & 0xFF
     if n >= 11:
         info.page_size = 1 << ((dw[10] >> 4) & 0xF)
+    if dw[0] & (1 << 22) and n >= 3:
+        op = dw[2] >> 24
+        if op not in (0x00, 0xFF):
+            info.quad_cmd = op
+            info.quad_dummy = ((dw[2] >> 16) & 0x1F) + ((dw[2] >> 21) & 0x7)
+    if n >= 15:
+        info.qer = (dw[14] >> 20) & 0x7
     return info

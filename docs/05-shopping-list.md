@@ -42,15 +42,16 @@
 | D2 | **W25Q64JVSSIQ**（SPI NOR，SOP8 208 mil） | 2–3 | SPI NOR 测试 | 几元 |
 | D3 | **W25N01GVZEIG 或 W25N01GVSFIG**（SPI NAND） 🆕 | 1–2 | ZEIG 是 WSON8，SFIG 是 SOIC16，按手上的座子选；上位机数据库里唯一逐项核对过数据手册的 SPI NAND | 十几元 |
 
-## E. 必买：调试工具
+## E. 必买：工具
 
 | # | 物品 | 数量 | 说明 | 大约价格 |
 |---|---|---|---|---|
-| E1 | **逻辑分析仪** 8 通道 24 MHz（Saleae 兼容） | 1 | Mac 上用 PulseView；出问题时看时序 | ¥30–60 |
-| E2 | **万用表** | 1 | 查通断、核对转接座、量电压 | 手头有即可 |
-| E3 | 电烙铁、焊锡、镊子 | — | 焊排针、取放芯片 | 手头有即可 |
+| E1 | **万用表** | 1 | 查通断、核对转接座、量电压 | 手头有即可 |
+| E2 | 电烙铁、焊锡、镊子 | — | 焊排针、取放芯片 | 手头有即可 |
 
-**A–E 合计约 ¥250–400**（不含已有工具）。
+**A–E 合计约 ¥200–350**（不含已有工具）。
+
+不需要逻辑分析仪：FPGA 时序已经在仿真里用芯片模型逐项检查过（`fpga/sim`），上板后用 `nsprog pins`（查接线、R/B#）、`nsprog selftest`（查链路）、读两遍比较（查稳定性）就能定位绝大多数问题。只有这些都查不出原因时才考虑买，见 G 节。
 
 ## F. 建议买：高速通道
 
@@ -70,7 +71,7 @@
 |---|---|
 | BGA63 转 TSOP48 转接板 | BGA63 封装的并口 NAND，插在 TSOP48 翻盖座上用 |
 | 防静电手环 | 取放芯片 |
-| 更高采样率逻辑分析仪（如 DSLogic） | 以后提速调试 |
+| 逻辑分析仪（真遇到怪问题再买） | 直接看总线波形。推荐正点原子 DL16（16 通道、250 MHz，ATK-Logic 支持 Mac，约 ¥500），并口 NAND 15 根线一次抓完；省钱可选 8 通道 24 MHz（¥30–60，PulseView），只能看控制线 + 1–2 根数据线，SPI 要 `--spi-mhz 2`、串口要 `--no-fast-uart`。用法见 [04-hardware-bringup.md](04-hardware-bringup.md) 第 2 节 |
 
 ## H. 暂时不买
 
@@ -86,5 +87,5 @@
 | Python 3.9+、pipx | 运行上位机 | `brew install python pipx` |
 | openFPGALoader | 烧写 Tang Nano 9K | `brew install openfpgaloader` |
 | nsprog（本项目） | 上位机 | `pipx install ./host` |
-| PulseView | 逻辑分析仪 | sigrok 官网 |
+| PulseView | 逻辑分析仪（如果买了） | sigrok 官网 |
 | （可选）yowasp-yosys 等 | 自己重新编译 FPGA 固件 | `pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula` |

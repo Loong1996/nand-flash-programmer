@@ -9,7 +9,7 @@ module engine #(
     parameter [15:0] BAUD_DIV_DEFAULT = 16'd234,
     parameter [7:0]  RX_AW            = 8'd12,
     parameter [7:0]  GW_MAJOR         = 8'd1,
-    parameter [7:0]  GW_MINOR         = 8'd0,
+    parameter [7:0]  GW_MINOR         = 8'd1,
     parameter [7:0]  BOARD_ID         = 8'd1
 ) (
     input  wire        clk,
@@ -20,6 +20,7 @@ module engine #(
     output reg         rx_pop,
     // result stream
     input  wire        tx_full,
+    input  wire        tx_room,        // TX FIFO has room for a few more bytes (bursts)
     output reg         tx_push,
     output reg  [7:0]  tx_data,
     input  wire        tx_drained,     // TX FIFO empty and UART idle
@@ -39,7 +40,8 @@ module engine #(
     output reg         spi_cs_act,
     output wire        spi_sck,
     output wire        spi_mosi,
-    input  wire        spi_miso,
+    input  wire [3:0]  spi_io_i,       // {IO3, IO2, IO1 = MISO, IO0}
+    output reg         spi_qin,        // release IO0/IO2/IO3 (quad data phase)
     output wire        spi_io2_hi,
     output wire        spi_io3_hi,
     output wire        spi_park,
@@ -61,7 +63,7 @@ module engine #(
                OP_NAND_WRITE  = 8'h13, OP_NAND_READ  = 8'h14, OP_NAND_WAIT = 8'h15,
                OP_NAND_POLL   = 8'h16,
                OP_SPI_CS      = 8'h20, OP_SPI_WRITE  = 8'h21, OP_SPI_READ  = 8'h22,
-               OP_SPI_XFER    = 8'h23, OP_SPI_POLL   = 8'h24;
+               OP_SPI_XFER    = 8'h23, OP_SPI_POLL   = 8'h24, OP_SPI_READ4 = 8'h25;
 
     localparam integer US_DIV       = CLK_HZ / 1_000_000;
     localparam integer MS_DIV       = CLK_HZ / 1_000;
@@ -110,31 +112,33 @@ module engine #(
 
     // ------------------------------------------------------------------
     // Bus engines
-    reg        nb_start;
+    reg        nb_req;
     reg  [1:0] nb_kind;
     reg  [7:0] nb_wdata;
     wire [7:0] nb_rdata;
-    wire       nb_busy, nb_done;
+    wire       nb_ack, nb_rvalid, nb_busy;
 
     nand_bus u_nand (
         .clk(clk), .rst(rst),
         .t_setup(t_setup), .t_wp(t_wp), .t_wh(t_wh), .t_rp(t_rp), .t_reh(t_reh),
         .t_whr(t_whr), .t_adl(t_adl),
-        .start(nb_start), .kind(nb_kind), .wdata(nb_wdata), .rdata(nb_rdata),
-        .busy(nb_busy), .done(nb_done),
+        .req(nb_req), .kind(nb_kind), .wdata(nb_wdata), .ack(nb_ack),
+        .rdata(nb_rdata), .rvalid(nb_rvalid), .busy(nb_busy),
         .cle(nand_cle), .ale(nand_ale), .we_act(nand_we_act), .re_act(nand_re_act),
         .io_o(nand_io_o), .io_oe(nand_io_oe), .io_i(nand_io_i)
     );
 
-    reg        sp_start;
+    reg        sp_req;
+    reg        sp_quad;
     reg  [7:0] sp_tx;
     wire [7:0] sp_rx;
-    wire       sp_busy, sp_done;
+    wire       sp_ack, sp_rvalid, sp_busy;
+    wire       spi_miso = spi_io_i[1];
 
     spi_master u_spi (
-        .clk(clk), .rst(rst), .div(spi_div), .sample_late(spi_late),
-        .start(sp_start), .tx(sp_tx), .rx(sp_rx), .busy(sp_busy), .done(sp_done),
-        .sck(spi_sck), .mosi(spi_mosi), .miso(spi_miso)
+        .clk(clk), .rst(rst), .div(spi_div), .sample_late(spi_late), .quad(sp_quad),
+        .req(sp_req), .tx(sp_tx), .ack(sp_ack), .rx(sp_rx), .rvalid(sp_rvalid), .busy(sp_busy),
+        .sck(spi_sck), .mosi(spi_mosi), .qin(spi_io_i)
     );
 
     assign nand_activity = nb_busy;
@@ -158,7 +162,8 @@ module engine #(
     reg [7:0]  op;
     reg [7:0]  args [0:15];
     reg [3:0]  argc, argn;
-    reg [15:0] len;
+    reg [15:0] len;            // bytes still to issue
+    reg [15:0] rleft;          // bytes still to receive (burst reads)
     reg [3:0]  idx;
     reg [7:0]  b;              // byte from S_GETB
     reg [7:0]  ib_ms;          // inter-byte timer
@@ -196,7 +201,7 @@ module engine #(
                 4'd10: info_byte = CLK_HZ[23:16];
                 4'd11: info_byte = CLK_HZ[31:24];
                 4'd12: info_byte = RX_AW;
-                4'd13: info_byte = 8'h1B;          // caps: NAND8 | SPI | FT245 | UART
+                4'd13: info_byte = 8'h7B;          // caps: NAND8|SPI|FT245|UART|QSPI|SYNC245
                 4'd14: info_byte = flags;
                 default: info_byte = {7'd0, active_port};
             endcase
@@ -224,6 +229,7 @@ module engine #(
                 OP_SPI_READ:   fixed_args = 4'd2;
                 OP_SPI_XFER:   fixed_args = 4'd2;
                 OP_SPI_POLL:   fixed_args = 4'd1;
+                OP_SPI_READ4:  fixed_args = 4'd2;
                 default:       fixed_args = 4'd0;
             endcase
         end
@@ -236,7 +242,7 @@ module engine #(
                 OP_NOP, OP_ECHO, OP_INFO, OP_SET_REG, OP_DELAY_US, OP_SET_BAUD, OP_GET_PINS,
                 OP_NAND_CE, OP_NAND_CMD, OP_NAND_ADDR, OP_NAND_WRITE, OP_NAND_READ,
                 OP_NAND_WAIT, OP_NAND_POLL,
-                OP_SPI_CS, OP_SPI_WRITE, OP_SPI_READ, OP_SPI_XFER, OP_SPI_POLL:
+                OP_SPI_CS, OP_SPI_WRITE, OP_SPI_READ, OP_SPI_XFER, OP_SPI_POLL, OP_SPI_READ4:
                     known_op = 1'b1;
                 default:
                     known_op = 1'b0;
@@ -244,13 +250,12 @@ module engine #(
         end
     endfunction
 
-    wire waiting_input = (st == S_ARGS) || (st == S_GETB);
+    wire waiting_input = (st == S_ARGS) || (st == S_GETB) ||
+                         ((st == S_NW || st == S_SW || st == S_SX) && len != 0);
 
     always @(posedge clk) begin
         rx_pop   <= 1'b0;
         tx_push  <= 1'b0;
-        nb_start <= 1'b0;
-        sp_start <= 1'b0;
 
         if (cs_gap != 0 && !spi_cs_act)
             cs_gap <= cs_gap - 1'b1;
@@ -275,6 +280,10 @@ module engine #(
             pin_ctrl     <= 8'b0000_0110;
             nand_ce_act  <= 1'b0;
             spi_cs_act   <= 1'b0;
+            spi_qin      <= 1'b0;
+            nb_req       <= 1'b0;
+            sp_req       <= 1'b0;
+            sp_quad      <= 1'b0;
             cs_gap       <= 8'd0;
             flags        <= 8'd0;
             baud_div     <= BAUD_DIV_DEFAULT;
@@ -307,6 +316,9 @@ module engine #(
                 flags[1]    <= 1'b1;
                 nand_ce_act <= 1'b0;
                 spi_cs_act  <= 1'b0;
+                spi_qin     <= 1'b0;
+                nb_req      <= 1'b0;
+                sp_req      <= 1'b0;
                 cs_gap      <= CS_MIN_HIGH;
                 ib_ms       <= 8'd0;
                 st          <= S_FETCH;
@@ -356,9 +368,12 @@ module engine #(
                 end
 
                 S_EXEC: begin
-                    len    <= arg_u16_0;
-                    idx    <= 4'd0;
-                    tmo_ms <= 16'd0;
+                    len     <= arg_u16_0;
+                    rleft   <= arg_u16_0;
+                    idx     <= 4'd0;
+                    tmo_ms  <= 16'd0;
+                    sp_quad <= 1'b0;
+                    sp_tx   <= 8'hFF;
                     case (op)
                         OP_NOP: st <= S_DONE;
                         OP_ECHO: begin
@@ -406,8 +421,14 @@ module engine #(
                             st       <= S_NAND;
                         end
                         OP_NAND_ADDR:  st <= S_ADDR;
-                        OP_NAND_WRITE: st <= S_NW;
-                        OP_NAND_READ:  st <= S_NR;
+                        OP_NAND_WRITE: begin
+                            nb_kind <= 2'd2;
+                            st      <= S_NW;
+                        end
+                        OP_NAND_READ: begin
+                            nb_kind <= 2'd3;
+                            st      <= S_NR;
+                        end
                         OP_NAND_WAIT: begin
                             wcnt <= t_wb;
                             st   <= S_WRB0;
@@ -423,12 +444,18 @@ module engine #(
                                 st <= S_CS_ON;
                             end else begin
                                 spi_cs_act <= 1'b0;
+                                spi_qin    <= 1'b0;
                                 cs_gap     <= CS_MIN_HIGH;
                                 st         <= S_DONE;
                             end
                         end
                         OP_SPI_WRITE: st <= S_SW;
                         OP_SPI_READ:  st <= S_SR;
+                        OP_SPI_READ4: begin
+                            sp_quad <= 1'b1;
+                            spi_qin <= 1'b1;
+                            st      <= S_SR;
+                        end
                         OP_SPI_XFER:  st <= S_SX;
                         OP_SPI_POLL:  st <= S_SP_CS;
                         default:      st <= S_DONE;
@@ -457,20 +484,26 @@ module engine #(
                         st     <= ret;
                     end
                 end
+                // One bus cycle; returns once it has completed.
                 S_NAND: begin
-                    nb_start <= 1'b1;
-                    st       <= S_NAND_W;
+                    nb_req <= 1'b1;
+                    st     <= S_NAND_W;
                 end
                 S_NAND_W: begin
-                    if (nb_done)
+                    if (nb_ack)
+                        nb_req <= 1'b0;
+                    else if (!nb_req && !nb_busy)
                         st <= ret;
                 end
+                // One SPI byte; returns with the received byte in sp_rx.
                 S_SPI: begin
-                    sp_start <= 1'b1;
-                    st       <= S_SPI_W;
+                    sp_req <= 1'b1;
+                    st     <= S_SPI_W;
                 end
                 S_SPI_W: begin
-                    if (sp_done)
+                    if (sp_ack)
+                        sp_req <= 1'b0;
+                    if (sp_rvalid)
                         st <= ret;
                 end
 
@@ -524,35 +557,35 @@ module engine #(
                         st       <= S_NAND;
                     end
                 end
+                // Burst data write: bytes go from the RX FIFO straight to the bus.
                 S_NW: begin
-                    if (len == 0) begin
-                        st <= S_DONE;
-                    end else begin
-                        ret <= S_NW2;
-                        st  <= S_GETB;
+                    if (nb_ack)
+                        nb_req <= 1'b0;
+                    if ((!nb_req || nb_ack) && len != 0 && rx_valid && !rx_pop) begin
+                        rx_pop   <= 1'b1;
+                        nb_wdata <= rx_data;
+                        nb_req   <= 1'b1;
+                        len      <= len - 1'b1;
                     end
+                    if (len == 0 && !nb_req && !nb_busy)
+                        st <= S_DONE;
                 end
-                S_NW2: begin
-                    nb_kind  <= 2'd2;
-                    nb_wdata <= b;
-                    len      <= len - 1'b1;
-                    ret      <= S_NW;
-                    st       <= S_NAND;
-                end
+                // Burst data read: back-to-back RE# cycles while the TX FIFO has room.
                 S_NR: begin
-                    if (len == 0) begin
-                        st <= S_DONE;
-                    end else begin
-                        nb_kind <= 2'd3;
-                        ret     <= S_NR2;
-                        st      <= S_NAND;
+                    if (nb_rvalid) begin
+                        tx_data <= nb_rdata;
+                        tx_push <= 1'b1;
+                        rleft   <= rleft - 1'b1;
                     end
-                end
-                S_NR2: begin
-                    tx_data <= nb_rdata;
-                    len     <= len - 1'b1;
-                    ret     <= S_NR;
-                    st      <= S_PUSH;
+                    if (nb_ack) begin
+                        len <= len - 1'b1;
+                        if (len == 16'd1 || !tx_room)
+                            nb_req <= 1'b0;
+                    end else if (!nb_req && len != 0 && tx_room) begin
+                        nb_req <= 1'b1;
+                    end
+                    if (rleft == 0)
+                        st <= S_DONE;
                 end
                 S_WRB0: begin
                     if (wcnt == 0) begin
@@ -606,52 +639,50 @@ module engine #(
                     end
                 end
                 S_SW: begin
-                    if (len == 0) begin
-                        st <= S_DONE;
-                    end else begin
-                        ret <= S_SW2;
-                        st  <= S_GETB;
+                    if (sp_ack)
+                        sp_req <= 1'b0;
+                    if ((!sp_req || sp_ack) && len != 0 && rx_valid && !rx_pop) begin
+                        rx_pop <= 1'b1;
+                        sp_tx  <= rx_data;
+                        sp_req <= 1'b1;
+                        len    <= len - 1'b1;
                     end
+                    if (len == 0 && !sp_req && !sp_busy)
+                        st <= S_DONE;
                 end
-                S_SW2: begin
-                    sp_tx <= b;
-                    len   <= len - 1'b1;
-                    ret   <= S_SW;
-                    st    <= S_SPI;
-                end
+                // SPI_READ / SPI_READ4 (sp_quad selects the bus width).
                 S_SR: begin
-                    if (len == 0) begin
-                        st <= S_DONE;
-                    end else begin
-                        sp_tx <= 8'hFF;
-                        ret   <= S_SR2;
-                        st    <= S_SPI;
+                    if (sp_rvalid) begin
+                        tx_data <= sp_rx;
+                        tx_push <= 1'b1;
+                        rleft   <= rleft - 1'b1;
                     end
-                end
-                S_SR2: begin
-                    tx_data <= sp_rx;
-                    len     <= len - 1'b1;
-                    ret     <= S_SR;
-                    st      <= S_PUSH;
+                    if (sp_ack) begin
+                        len <= len - 1'b1;
+                        if (len == 16'd1 || !tx_room)
+                            sp_req <= 1'b0;
+                    end else if (!sp_req && len != 0 && tx_room) begin
+                        sp_req <= 1'b1;
+                    end
+                    if (rleft == 0)
+                        st <= S_DONE;
                 end
                 S_SX: begin
-                    if (len == 0) begin
-                        st <= S_DONE;
-                    end else begin
-                        ret <= S_SX2;
-                        st  <= S_GETB;
+                    if (sp_rvalid) begin
+                        tx_data <= sp_rx;
+                        tx_push <= 1'b1;
+                        rleft   <= rleft - 1'b1;
                     end
-                end
-                S_SX2: begin
-                    sp_tx <= b;
-                    ret   <= S_SX3;
-                    st    <= S_SPI;
-                end
-                S_SX3: begin
-                    tx_data <= sp_rx;
-                    len     <= len - 1'b1;
-                    ret     <= S_SX;
-                    st      <= S_PUSH;
+                    if (sp_ack)
+                        sp_req <= 1'b0;
+                    if ((!sp_req || sp_ack) && len != 0 && rx_valid && !rx_pop && tx_room) begin
+                        rx_pop <= 1'b1;
+                        sp_tx  <= rx_data;
+                        sp_req <= 1'b1;
+                        len    <= len - 1'b1;
+                    end
+                    if (rleft == 0)
+                        st <= S_DONE;
                 end
                 S_SP_CS: begin
                     if (cs_gap == 0) begin

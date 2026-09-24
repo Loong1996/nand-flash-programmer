@@ -5,12 +5,18 @@
 - **并口 NAND**：TSOP48，以及经转接板的 BGA63/BGA48，8 位
 - **SPI NOR / SPI NAND**：SOP8、WSON8、USON8、DIP8、SOIC16、测试夹在板读写
 - 所有转接座**同时接好**，换芯片不用改线
-- 上位机 **Python 跨平台**（macOS / Windows / Linux），提供**命令行**和**本地网页界面**
+- 上位机 **Python 跨平台**（macOS / Windows / Linux），提供**命令行**和 **iOS 风格的本地网页界面**；也有免安装 Python 的单文件程序
+- **离线工具**：OOB 去除/添加、ECC 检查与纠错（与 Linux 内核的 Hamming / BCH 逐字节一致）、UBI 卷解析与提取、十六进制查看、坏块分布图
 - 芯片库：直接使用 [bbogush/nand_programmer](https://github.com/bbogush/nand_programmer) 的数据库，再加上 ONFI（并口 NAND）、SFDP（SPI NOR）自动识别，以及 SPI NOR/NAND 补充表
 - 全新协议：FPGA 是微操作执行引擎，**支持新芯片只改上位机**
-- 两条链路：板载 USB 串口（自动提速到 3 Mbaud），可选 FT232H 高速 FIFO（约 2–3 MB/s）
+- 链路：板载 USB 串口（自动提速到 3 Mbaud，约 290 KB/s）；可选 FT232H：异步 FIFO 约 2 MB/s，同步 FIFO 仿真约 13 MB/s
+- 提速选项：NAND 突发读写与快速时序（`--nand-timing`），SPI NOR 四线读（`--spi-quad`）
 
 > 状态：FPGA 设计、上位机、仿真和软件模拟器测试已完成；**尚未在实物上验证**。第一次使用请按 [上手指南](docs/quickstart.md) 逐步检查。
+>
+> ⚠️ **接线表在 0.2 版改过**：Tang Nano 9K 的 79–86 脚是 1.8V，NAND 控制线和 SPI DI 已改到 69–75 脚，FT232H CLKOUT/SIWU# 对调到 36/35 脚。以 [docs/wiring.md](docs/wiring.md) 为准。
+
+![读写页面](docs/img/ui-rw.png)
 
 ## 快速开始
 
@@ -25,6 +31,8 @@ nsprog web                                   # 打开网页界面
 ```
 
 没有硬件也能体验：`nsprog -p emu info`、`nsprog web` 后在端口里选 “Software emulator”。
+
+**不想装 Python**：到 GitHub Actions 的 `apps` 工作流下载 `nsprog-macos-arm64` / `nsprog-windows-x86_64.exe` / `nsprog-linux-x86_64`（打 `v*` 标签时也会附在 Release 里）。双击直接打开网页界面，加参数就是命令行。
 
 ## 文档
 
@@ -45,11 +53,12 @@ nsprog web                                   # 打开网页界面
 
 ```
 fpga/rtl/            Verilog：引擎、NAND 总线、SPI、UART、FT245、顶层
-fpga/constraints/    Tang Nano 9K 引脚约束
+fpga/constraints/    Tang Nano 9K 引脚约束与时钟约束
 fpga/sim/            cocotb + Icarus 端到端仿真（Verilog 芯片模型 + 真实上位机驱动）
 fpga/build.py        构建比特流（yosys / nextpnr-himbaechel / apycula，pip 可装）
 host/                Python 上位机 nsprog（命令行、网页界面、驱动、芯片库、模拟器、测试）
 host/src/nsprog/bitstream/   预编译好的比特流
+host/packaging/      单文件程序打包（PyInstaller）
 docs/                文档
 ```
 
@@ -60,6 +69,7 @@ pip install -e "host[test]" && pytest host                     # 上位机测试
 python fpga/sim/run_sim.py                                     # RTL 仿真（需要 iverilog、cocotb）
 pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula
 python fpga/build.py --install                                 # 重新生成比特流
+pip install ./host pyinstaller && python host/packaging/build_app.py   # 打包单文件程序
 ```
 
 ## 许可证
