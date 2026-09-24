@@ -323,13 +323,14 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         ctx = jobs.Context(progress=progress, cancel=st.cancel, message=message)
 
         def run():
+            # Everything else is filled in first; "state" changes last, because
+            # clients treat a non-running state as "all results available".
             rep_dict = None
             try:
                 with st.lock:
                     rep = fn(ctx)
                 rep_dict = rep.as_dict()
                 st.job["report"] = rep_dict
-                st.job["state"] = "done" if rep.ok else "failed"
                 if on_done:
                     on_done(rep)
                 if result_file and rep.ok:
@@ -338,15 +339,17 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                     st.result_meta = dict(result_meta or {}, name=result_name,
                                           size=os.path.getsize(result_file))
                     st.job["download"] = "/api/result"
+                final = "done" if rep.ok else "failed"
             except jobs.Cancelled:
-                st.job["state"] = "cancelled"
+                final = "cancelled"
             except Exception as e:
                 log.debug("job failed", exc_info=True)
-                st.job["state"] = "failed"
                 st.job["messages"].append("error: %s" % e)
                 st.job["trace"] = traceback.format_exc()
+                final = "failed"
             st.job["finished"] = time.time()
-            _record(op, target, chip_name, rep_dict, st.job["state"])
+            _record(op, target, chip_name, rep_dict, final)
+            st.job["state"] = final
             st.bump()
         threading.Thread(target=run, daemon=True).start()
         return st.snapshot()
