@@ -77,7 +77,15 @@ module tb;
         .ft_clkout(ft_clkout), .ft_oe_n(ft_oe_n), .ft_siwu_n(1'b1)
     );
 
+`ifdef W29N02KV
+    // Winbond W29N02KVSIAF: ID EF DA 10 95 06, 2048 blocks x 64 pages x (2048 + 128) B, 4-bit ECC.
+    // Memory for the first 8 blocks only; ONFI reports the real size.
+    nand_model #(.PAGE(2048), .SPARE(128), .PPB(64), .BLOCKS(8), .ONFI_BLOCKS(2048),
+                 .ID(40'h06_95_10_DA_EF), .MFR("WINBOND"), .MODEL("W29N02KVxxAF"), .ECC_BITS(4),
+                 .T_R(25000.0), .T_PROG(250000.0), .T_BERS(2000000.0)) u_nand (
+`else
     nand_model u_nand (
+`endif
         .ce_n(nand_ce_n), .cle(nand_cle), .ale(nand_ale), .we_n(nand_we_n),
         .re_n(nand_re_n), .wp_n(nand_wp_n), .io(nand_io), .rb_n(nand_rb_n)
     );

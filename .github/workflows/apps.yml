@@ -43,7 +43,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ./host pyinstaller pillow
+      - run: pip install "./host[fs]" pyinstaller pillow
       # single-file executable (all three systems)
       - run: python host/packaging/build_app.py
       # macOS: nsprog.app in a .dmg

@@ -73,7 +73,7 @@ python fpga/sim/run_sim.py                                     # RTL 仿真（�
 pip install yowasp-yosys yowasp-nextpnr-himbaechel-gowin apycula
 python fpga/sim/run_sim.py gate                                # 门级仿真（综合后网表）
 python fpga/build.py --install                                 # 重新生成比特流
-pip install ./host pyinstaller pillow
+pip install "./host[fs]" pyinstaller pillow
 python host/packaging/build_app.py              # 单文件程序
 python host/packaging/build_app.py --app        # macOS：nsprog.app + .dmg（见 host/packaging/README）
 python host/packaging/build_app.py --installer  # Windows：Inno Setup 安装包

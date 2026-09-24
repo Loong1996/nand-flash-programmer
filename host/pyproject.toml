@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+fs = ["lz4", "zstandard"]          # lz4 / zstd compressed SquashFS, UBIFS (LZO, zlib, xz built in)
 
 [project.scripts]
 nsprog = "nsprog.cli:main"

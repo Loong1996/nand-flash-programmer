@@ -85,6 +85,8 @@ def pyinstaller(name: str, *extra) -> None:
          "--collect-submodules", "websockets",
          "--hidden-import", "usb.backend.libusb1",
          "--hidden-import", "serial.tools.list_ports",
+         "--hidden-import", "lz4.block",                # optional: lz4 / zstd file systems
+         "--hidden-import", "zstandard",
          *extra, HERE / "entry.py"])
 
 

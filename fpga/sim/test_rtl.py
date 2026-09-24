@@ -21,6 +21,7 @@ from nsprog import protocol as P  # noqa: E402
 from nsprog.flash import SpiNand, SpiNor, detect, set_spi_clock  # noqa: E402
 
 SPI_NAND = os.environ.get("NSPROG_SIM_SPI") == "nand"
+W29N02KV = os.environ.get("NSPROG_SIM_NAND") == "w29n02kv"
 
 
 def rnd(n, seed):
@@ -313,4 +314,37 @@ async def ft_spi_nand(dut):
         assert jobs.erase(drv, start=0, count=4).ok
         assert jobs.blank_check(drv, start=0, count=4).ok
     await bridge(host)()
+    check_models(dut)
+
+
+# ----------------------------------------------------------------------------
+@cocotb.test(skip=not W29N02KV)
+async def ft_w29n02kvsiaf(dut):
+    """Winbond W29N02KVSIAF (first test chip): ID, ONFI + database, 2048+128 pages, real tR/tPROG/tBERS."""
+    await start(dut)
+    ft, dev = ft_device(dut)
+
+    def host():
+        dev.open(negotiate=False)
+        det = detect(dev, want="nand")
+        drv = det.nand
+        assert drv is not None, det.messages
+        assert drv.name == "W29N02KVSIAF" and drv.chip.source == "nsprog+onfi", det.messages
+        assert det.nand_id[:5] == bytes.fromhex("EFDA109506")
+        assert (drv.page_size, drv.chip.spare_size, drv.pages_per_block, drv.blocks) == (2048, 128, 64, 2048)
+        assert drv.chip.ecc_bits == 4 and drv.chip.voltage == 3.3
+        assert any("4-bit ECC per 512 B" in m for m in det.messages)
+        assert drv.bad_blocks([0, 3])[3] and not drv.bad_blocks([0])[0]
+        image = raw_image(drv, 1, seed=29)
+        rep = jobs.write(drv, image, start=4, bb="skip")
+        assert rep.ok, rep.summary()
+        out = io.BytesIO()
+        jobs.read(drv, out, start=4, count=1, bb="skip")
+        assert out.getvalue() == image
+        assert jobs.erase(drv, start=4, count=1).ok
+        assert jobs.blank_check(drv, start=4, count=1).ok
+        assert not dev.pin_ctrl & P.PIN_NAND_WP_HIGH
+    await bridge(host)()
+    assert int(dut.u_nand.programs.value) == 64 and int(dut.u_nand.erases.value) >= 1
+    assert ft.errors == 0
     check_models(dut)

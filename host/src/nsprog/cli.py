@@ -423,6 +423,44 @@ def cmd_image(args):
         print("built %d raw pages%s -> %s" % (n, (" with %s ECC" % lay.describe()) if lay else "",
                                                 args.dst))
         return 0
+    if args.action == "diff":
+        import json
+
+        from .diff import diff_files
+
+        if args.main:
+            geo.oob = 0
+        rep = diff_files(args.src, args.other, geo, flip_bits=args.flip_bits, keep=max(args.list, 1000))
+        print(rep.summary())
+        for d in rep.diffs[:args.list]:
+            print("  page %7d (block %5d): %-7s main %4d B, OOB %3d B, bits 1->0 %d, 0->1 %d, first @%d"
+                  % (d.page, d.page // geo.ppb, d.kind, d.main_bytes, d.oob_bytes, d.bits_10, d.bits_01,
+                     d.first))
+        if len(rep.diffs) > args.list:
+            print("  ... (%d more; --list N shows more)" % (rep.diff_pages - args.list))
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump({"summary": rep.summary(), "identical": rep.identical, "kinds": rep.kinds,
+                           "blocks": rep.block_rows(), "pages": [d.as_dict() for d in rep.diffs]},
+                          f, indent=1)
+        return 0 if rep.identical else 1
+    if args.action == "scan":
+        import json
+
+        from .scan import scan_file
+
+        srep = scan_file(args.src, geo.page, 0 if args.main else geo.oob, geo.ppb)
+        print(srep.summary())
+        if args.env and srep.env:
+            print("U-Boot environment:")
+            for k, v in srep.env.items():
+                print("  %s=%s" % (k, v))
+        if args.json:
+            with open(args.json, "w") as f:
+                json.dump({"findings": [x.as_dict() for x in srep.findings],
+                           "partitions": [x.as_dict() for x in srep.partitions], "env": srep.env},
+                          f, indent=1)
+        return 0
     raise SystemExit("unknown action")
 
 
@@ -455,6 +493,61 @@ def cmd_ubi(args):
         if args.action == "extract":
             for path in ubi.extract(f, img, args.outdir):
                 print("  %s  (%s)" % (path, ubi.detect_content(path)))
+    return 0
+
+
+def _main_area(args) -> bytes:
+    """The image as main-area bytes (a raw image is stripped of its OOB first)."""
+    import io
+
+    if getattr(args, "oob", None) and args.page:
+        from .image import Geometry, strip_oob
+
+        out = io.BytesIO()
+        with open(args.src, "rb") as f:
+            strip_oob(f, out, Geometry(args.page, args.oob, args.ppb or 64))
+        return out.getvalue()
+    if getattr(args, "chip", None):
+        from .image import Geometry, strip_oob
+
+        g = Geometry.from_chip(args.chip)
+        size = os.path.getsize(args.src)
+        if size % (g.raw * g.ppb) == 0 and size % (g.page * g.ppb) != 0:
+            out = io.BytesIO()
+            with open(args.src, "rb") as f:
+                strip_oob(f, out, g)
+            return out.getvalue()
+    with open(args.src, "rb") as f:
+        return f.read()
+
+
+def cmd_fs(args):
+    from . import fs
+
+    data = _main_area(args)
+    if args.offset is not None:
+        found = [fs.Found(args.offset, None, fs.open_fs(data, args.offset))]
+    else:
+        found = fs.find_all(data)
+        if not found:
+            raise SystemExit("no SquashFS / JFFS2 / UBIFS / UBI found "
+                             "(raw image? give --chip or --page/--oob)")
+    for f in found:
+        if f.fs is None:
+            print("%s: cannot open (%s)" % (f.label, f.error))
+            continue
+        print("%s  %s" % (f.label, ", ".join("%s=%s" % kv for kv in f.fs.info().items())))
+        if args.action == "list":
+            for e in f.fs.entries():
+                print("  %s %10s  %s%s" % (e.mode_str, e.size if e.kind == "file" else "", e.path,
+                                            " -> " + e.target if e.target else ""))
+        else:
+            dst = os.path.join(args.outdir, f.label) if len(found) > 1 or args.offset is None else args.outdir
+            c = f.fs.extract(dst)
+            print("  -> %s: %d files, %d directories, %d symlinks%s%s" % (
+                dst, c["files"], c["dirs"], c["symlinks"],
+                ", %d skipped (device nodes etc.)" % c["skipped"] if c["skipped"] else "",
+                ", %d errors" % c["errors"] if c["errors"] else ""))
     return 0
 
 
@@ -610,7 +703,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--ecc-offset", type=int,
                         help="ECC start inside the OOB (default: packed at the end, Linux layout)")
 
-    sp = sub.add_parser("image", help="offline image tools (info / strip / split / merge)")
+    sp = sub.add_parser("image", help="offline image tools (info / strip / split / merge / diff / scan)")
     isub = sp.add_subparsers(dest="action", required=True)
     x = isub.add_parser("info", help="page / block / bad-block / content summary")
     x.add_argument("src")
@@ -632,6 +725,22 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("--oob-file")
     geo_opts(x)
     ecc_opts(x, required=False)
+    x = isub.add_parser("diff", help="compare two images page by page (bit flips vs. real changes)")
+    x.add_argument("src", help="image A")
+    x.add_argument("other", help="image B")
+    x.add_argument("--main", action="store_true", help="images have no OOB")
+    x.add_argument("--flip-bits", type=int, default=4,
+                   help="at most this many differing bits per 512 B counts as a bit flip (default 4)")
+    x.add_argument("--list", type=int, default=20, help="list the first N differing pages (default 20)")
+    x.add_argument("--json", help="write the full report as JSON")
+    geo_opts(x)
+    x = isub.add_parser("scan", help="find partitions (mtdparts, device tree), U-Boot env, uImage/FIT, "
+                                     "file systems")
+    x.add_argument("src")
+    x.add_argument("--main", action="store_true", help="image has no OOB")
+    x.add_argument("--env", action="store_true", help="print every U-Boot environment variable")
+    x.add_argument("--json", help="write the report as JSON")
+    geo_opts(x)
     for x in isub.choices.values():
         x.set_defaults(func=cmd_image)
 
@@ -661,6 +770,19 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("outdir")
     x.add_argument("--peb", type=int)
     x.set_defaults(func=cmd_ubi)
+
+    sp = sub.add_parser("fs", help="list / extract SquashFS, JFFS2, UBIFS (also inside UBI) from an image")
+    fsub = sp.add_subparsers(dest="action", required=True)
+    for name, hlp in (("list", "list the files of every file system found"),
+                      ("extract", "extract every file system found into OUTDIR/<offset>-<type>/")):
+        x = fsub.add_parser(name, help=hlp)
+        x.add_argument("src")
+        if name == "extract":
+            x.add_argument("outdir")
+        x.add_argument("--offset", type=lambda v: int(v, 0),
+                       help="only the file system starting at this main-area offset")
+        geo_opts(x)
+        x.set_defaults(func=cmd_fs)
 
     sp = sub.add_parser("selftest", help="link stress test")
     sp.add_argument("--rounds", type=int, default=20)
