@@ -85,7 +85,7 @@ class ScanReport:
                 end = self.size if p.size is None else p.offset + p.size
                 inside = [f.kind for f in self.findings if p.offset <= f.offset < end]
                 s.append("  %-16s 0x%08X  %10s%s%s" % (
-                    p.name, p.offset, _fmt_size(end - p.offset), "  ro" if p.read_only else "",
+                    p.name, p.offset, self._psize(p), "  ro" if p.read_only else "",
                     ("  -> " + ", ".join(dict.fromkeys(inside))) if inside else ""))
         for key in ("bootargs", "bootcmd"):
             if key in self.env:
@@ -102,12 +102,20 @@ class ScanReport:
                                     if k not in ("vars", "images", "partitions") and v not in (None, ""))]
                          for f in self.findings]}
 
+    def _psize(self, p: Partition) -> str:
+        """Partition size; '-' partitions run to the end of the image."""
+        if p.offset >= self.size:
+            return "beyond image" if p.size is None else _fmt_size(p.size) + " (beyond image)"
+        if p.size is None:
+            return _fmt_size(self.size - p.offset) + " (rest)"
+        return _fmt_size(p.size) + (" (past end)" if p.offset + p.size > self.size else "")
+
     def partition_table(self) -> dict:
         rows = []
         for p in self.partitions:
             end = self.size if p.size is None else p.offset + p.size
             inside = [f.kind for f in self.findings if p.offset <= f.offset < end]
-            rows.append([p.name, "0x%08X" % p.offset, _fmt_size(end - p.offset),
+            rows.append([p.name, "0x%08X" % p.offset, self._psize(p),
                          ", ".join(dict.fromkeys(inside)), p.source])
         return {"cols": ["分区", "偏移", "大小", "内容", "来源"], "rows": rows}
 

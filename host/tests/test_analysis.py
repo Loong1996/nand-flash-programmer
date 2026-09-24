@@ -281,3 +281,62 @@ def test_jffs2_newest_version_wins():
     f = fs.JFFS2(b"".join(nodes))
     files = {e.path: e.read() for e in f.entries() if e.kind == "file"}
     assert files == {"/a.txt": b"HEllo world", "/sub/b.txt": b"a"}
+
+
+# --------------------------------------------------------------------------- web tools
+def test_web_analysis_tools(tmp_path, monkeypatch):
+    pytest.importorskip("httpx")
+    import time
+    import zipfile
+
+    from fastapi.testclient import TestClient
+
+    from nsprog.web.app import create_app
+
+    monkeypatch.setenv("NSPROG_HOME", str(tmp_path))
+    c = TestClient(create_app())
+
+    def run(tool, q, body):
+        assert c.post("/api/tools/%s?%s" % (tool, q), content=body).status_code == 200
+        end = time.time() + 30
+        while time.time() < end:
+            j = c.get("/api/state").json()["job"]
+            if j and j["op"] == "tool:" + tool and j["state"] != "running":
+                return j
+            time.sleep(0.02)
+        raise AssertionError("tool did not finish")
+
+    # file-system dump: main area, no OOB
+    img = bytearray(b"\xff" * (1 << 20))
+    for off, name in ((0x10000, "sq_lzo.img.gz"), (0x80000, "jffs2_le.img.gz")):
+        d = fixture(name)
+        img[off:off + len(d)] = d
+    k = uimage("kern", b"k" * 4000)
+    img[0x40000:0x40000 + len(k)] = k
+    q = "page=2048&oob=0&ppb=64&name=dump.bin"
+
+    j = run("scan", q, bytes(img))
+    kinds = [r[1] for r in j["report"]["extra"]["tables"][0]["rows"]]
+    assert j["state"] == "done" and kinds == ["SquashFS", "uImage", "JFFS2"]
+
+    j = run("fs_list", q, bytes(img))
+    rows = j["report"]["extra"]["tables"][0]["rows"]
+    link = next(r[0]["href"] for r in rows if r[0]["text"] == "/usr/lib/text.txt" and r[3].startswith("SquashFS"))
+    files, _links, _dirs = reference_tree()
+    assert c.get(link).content == files["/usr/lib/text.txt"]
+    assert c.get("/api/fs/file?i=9&path=/x").status_code == 404
+
+    j = run("fs_extract", q, bytes(img))
+    assert j["download"]
+    with zipfile.ZipFile(io.BytesIO(c.get("/api/result").content)) as z:
+        names = z.namelist()
+        assert "0x00080000-JFFS2/usr/lib/deep/rand.bin" in names
+        assert z.read("0x00010000-SquashFS/etc/banner") == files["/etc/banner"]
+
+    # diff: A + B in one body, split = len(A)
+    a = bytes(img[:0x20000])
+    b = bytearray(a)
+    b[100] ^= 0x01
+    j = run("diff", "page=2048&oob=0&ppb=64&split=%d" % len(a), a + bytes(b))
+    assert j["report"]["extra"]["kinds"]["bitflip"] == 1 and not j["report"]["ok"]
+    assert c.post("/api/tools/diff?page=2048&oob=0", content=a).status_code == 400

@@ -358,6 +358,19 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
         transition: all .3s var(--spring); background: var(--glass-thin); }
 .drop:hover, .drop.over { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); transform: scale(1.01); }
 .drop .ic { width: 34px; height: 34px; stroke-width: 1.5; display: block; margin: 0 auto 6px; }
+.drop.small { padding: 12px; border-radius: 18px; margin-top: 10px; font-size: 13px; }
+.drop.small .ic { width: 22px; height: 22px; margin-bottom: 2px; }
+.rt { margin-top: 12px; }
+.rt h4 { margin: 0 0 6px; font-size: 13px; color: var(--label2); font-weight: 600; }
+.rt-wrap { max-height: 340px; overflow: auto; border-radius: 14px; background: var(--fill3); }
+.rt table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rt th { position: sticky; top: 0; background: var(--glass-strong); backdrop-filter: blur(12px); text-align: left;
+         font-weight: 600; color: var(--label2); padding: 7px 10px; white-space: nowrap; }
+.rt td { padding: 6px 10px; border-top: 0.5px solid var(--sep); font-family: var(--mono); vertical-align: top; white-space: nowrap; }
+.rt td.w { white-space: normal; overflow-wrap: anywhere; min-width: 160px; }
+.rt td a { color: var(--accent); text-decoration: none; }
+.rt td a:hover { text-decoration: underline; }
+.rt .more { font-size: 12px; color: var(--label3); padding: 6px 2px; }
 .drop b { color: var(--label); }
 .drop.has { border-style: solid; border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 
@@ -831,6 +844,7 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
   <div class="grid g2">
     <div>
       <div class="drop" id="toolDrop"><svg class="ic"><use href="#i-folder"/></svg><span id="toolFile">把镜像文件拖到这里，或 <b>点击选择</b></span></div>
+      <div class="drop small" id="toolDrop2"><svg class="ic"><use href="#i-layers"/></svg><span id="toolFile2">镜像对比用的第二个文件（B）</span></div>
       <div class="sec-h">几何参数</div>
       <div class="glass list">
         <div class="li"><div class="li-l"><div class="t">填入</div></div><span class="pop"><select id="geoPreset"></select></span></div>
@@ -855,6 +869,8 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
       <div class="tiles" style="grid-template-columns:repeat(3,minmax(0,1fr))" id="toolTiles1"></div>
       <div class="sec-h">ECC 与 UBI</div>
       <div class="tiles" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="toolTiles2"></div>
+      <div class="sec-h">分析</div>
+      <div class="tiles" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="toolTiles3"></div>
       <div class="sec-h">结果</div>
       <div class="jobpanel" data-scope="tools"></div>
     </div>
@@ -1064,7 +1080,8 @@ document.addEventListener('keydown', e => {
 let S = null, target = null, settingsInit = false, lastJobState = null, lastJobKey = '', speed = {t: 0, d: 0, v: 0};
 const OPS = {read: '读取', write: '写入', verify: '校验', erase: '擦除', blank: '查空', badblocks: '坏块扫描',
   'tool:info': '镜像信息', 'tool:strip': '去除 OOB', 'tool:merge': '添加 OOB', 'tool:ecc_check': 'ECC 检查', 'tool:ecc_fix': 'ECC 纠错',
-  'tool:ubi_info': 'UBI 信息', 'tool:ubi_extract': 'UBI 提取'};
+  'tool:ubi_info': 'UBI 信息', 'tool:ubi_extract': 'UBI 提取', 'tool:scan': '分区与头部', 'tool:diff': '镜像对比',
+  'tool:fs_list': '浏览文件系统', 'tool:fs_extract': '导出文件系统'};
 const PHASES = {read: '读取中', write: '写入中', erase: '擦除中', verify: '校验中', blank: '查空中', scan: '扫描坏块'};
 const STATES = {running: '进行中', done: '完成', failed: '失败', cancelled: '已取消'};
 const RATE_OPS = ['read', 'write', 'verify', 'blank'];
@@ -1419,7 +1436,8 @@ function renderJob(j) {
     }
     p.querySelector('.jp-stats').innerHTML = stats.join('');
     p.querySelector('.jp-cancel').classList.toggle('hidden', !running);
-    p.querySelector('.jp-report').innerHTML = j && j.report ? `<div class="report ${j.report.ok ? 'ok' : 'bad'}">${esc(j.report.summary)}</div>` : '';
+    p.querySelector('.jp-report').innerHTML = j && j.report ? `<div class="report ${j.report.ok ? 'ok' : 'bad'}">${esc(j.report.summary)}</div>` +
+      reportTables(j.report.extra && j.report.extra.tables) : '';
     let acts = '';
     if (j && j.download && j.state === 'done') acts = `<a class="btn filled sm" href="${j.download}" download>${ic('down')}下载 ${esc(S.result ? S.result.name : '')}</a>` +
       `<a class="btn sm" href="#/data">${ic('eye')}查看数据</a>`;
@@ -1627,6 +1645,17 @@ $('bbCanvas').addEventListener('mousemove', e => {
 $('bbCanvas').addEventListener('mouseleave', () => $('bbTip').classList.add('hidden'));
 $('badScan').onclick = () => { if (target && S[target]) { speed = {t: 0, d: 0, v: 0}; api('/api/job/badblocks?target=' + target, {method: 'POST'}).then(render).catch(fail); } };
 
+function reportTables(tables) {       // [{title, cols, rows}] from offline tools; a cell may be {text, href}
+  if (!tables || !tables.length) return '';
+  const cell = c => c && typeof c === 'object' ? (c.href ? `<a href="${esc(c.href)}" download>${esc(c.text)}</a>` : esc(c.text)) : esc(String(c ?? ''));
+  return tables.map(t => {
+    const rows = t.rows || [], shown = rows.slice(0, 2000);
+    return `<div class="rt"><h4>${esc(t.title || '')} · ${rows.length}</h4><div class="rt-wrap"><table><thead><tr>${t.cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>` +
+      `<tbody>${shown.map(r => `<tr>${r.map((c, i) => `<td${i === (t.wrap ?? t.cols.length - 1) ? ' class="w"' : ''}>${cell(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` +
+      (rows.length > shown.length ? `<div class="more">只显示前 ${shown.length} 行</div>` : '') + '</div>';
+  }).join('');
+}
+
 /* ======================================================================
    Tools page
    ====================================================================== */
@@ -1651,8 +1680,21 @@ const TOOLS2 = [
   {t: 'ecc_fix', n: 'ECC 纠错', s: '纠正位翻转后输出新镜像', i: 'wand', c: 'purple'},
   {t: 'ubi_info', n: 'UBI 信息', s: '卷表、擦写次数', i: 'layers', c: 'teal'},
   {t: 'ubi_extract', n: 'UBI 提取', s: '按卷导出为 zip', i: 'box', c: 'pink'}];
+const TOOLS3 = [
+  {t: 'scan', n: '分区与头部', s: 'mtdparts、设备树、U-Boot 环境、uImage/FIT', i: 'search', c: 'orange'},
+  {t: 'diff', n: '镜像对比', s: '逐页比较 A 与 B，区分位翻转和真实改动', i: 'layers', c: 'red'},
+  {t: 'fs_list', n: '浏览文件系统', s: 'SquashFS、JFFS2、UBIFS，点文件名下载', i: 'folder', c: 'green'},
+  {t: 'fs_extract', n: '导出文件系统', s: '全部文件打包为 zip', i: 'down', c: 'blue'}];
 const toolTile = x => `<button class="glass tile" data-tool="${x.t}"><span class="ti sq ${x.c}">${ic(x.i)}</span><b>${x.n}</b><small>${x.s}</small></button>`;
 $('toolTiles1').innerHTML = TOOLS1.map(toolTile).join(''); $('toolTiles2').innerHTML = TOOLS2.map(toolTile).join('');
+$('toolTiles3').innerHTML = TOOLS3.map(toolTile).join('');
+let toolFile2 = null;
+function setToolFile2(f) {
+  toolFile2 = f;
+  $('toolDrop2').classList.toggle('has', !!f);
+  $('toolFile2').innerHTML = f ? `B：<b>${esc(f.name)}</b> <span class="muted">${fmtSize(f.size)}</span>` : '镜像对比用的第二个文件（B）';
+}
+dropZone($('toolDrop2'), setToolFile2, () => pickFile(setToolFile2));
 function setToolFile(f) {
   toolFile = f;
   $('toolDrop').classList.toggle('has', !!f);
@@ -1673,7 +1715,12 @@ async function runTool(t) {
   if ($('eccOff').value) p.set('ecc_offset', $('eccOff').value);
   if ($('ubiPeb').value) p.set('peb', $('ubiPeb').value);
   if (t === 'merge' && +$('geoOob').value === 0) { toast('添加 OOB 需要 OOB 大小 > 0', 'warn'); return; }
-  try { render(await api('/api/tools/' + t + '?' + p, {method: 'POST', body: await toolFile.arrayBuffer()})); }
+  let body = toolFile;
+  if (t === 'diff') {
+    if (!toolFile2) { toast('再选择要对比的第二个文件（B）', 'warn'); pickFile(f => { setToolFile2(f); runTool(t); }); return; }
+    p.set('split', toolFile.size); body = new Blob([toolFile, toolFile2]);
+  }
+  try { render(await api('/api/tools/' + t + '?' + p, {method: 'POST', body: await body.arrayBuffer()})); }
   catch (e) { fail(e); }
 }
 $('page-tools').addEventListener('click', e => { const b = e.target.closest('[data-tool]'); if (b) runTool(b.dataset.tool); });
