@@ -29,7 +29,7 @@
 | M1 烧写固件 | LED0 闪烁；`nsprog info` 显示 gateware 1.2 |
 | M2 UART 提速 | `nsprog info` 显示 3000000 baud；`nsprog selftest` 通过 |
 | M3 接线检查 | 空座子 `nsprog doctor` 全部正常；`doctor --probe` 在座子上逐脚碰一遍都有反应 |
-| M4 W29N02KV | 识别出芯片；两次整片读取一致；写入、校验、擦除通过 |
+| M4 W29N02KVSIAF | `nsprog info` 识别为 W29N02KVSIAF（database + ONFI）；两次整片读取一致；写入、校验、擦除通过；通过后把 `nand_extra.csv` 里的 verified 改成 1 |
 | M5 SPI NOR / SPI NAND | W25Q64、W25N01GV 读写校验通过 |
 | M6 FT232H | EEPROM 设置成功；`link FT232H`；读取速度 ≥ 1.5 MB/s |
 | M7 提速 | `--nand-timing fast` 读两遍一致；`--port ft232h-sync` 下 `selftest` 通过、NAND 读取 ≥ 8 MB/s；`--spi-quad on` 读出与单线一致 |

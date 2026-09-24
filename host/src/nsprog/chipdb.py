@@ -3,6 +3,7 @@
 * ``nando_parallel_chip_db.csv`` / ``nando_spi_chip_db.csv``: taken unchanged
   from bbogush/nand_programmer (GPLv3).
 * ``nand_voltage.csv``: supply voltage for the NANDO parallel entries.
+* ``nand_extra.csv``: parallel NAND parts missing from NANDO (with ECC requirement).
 * ``spi_nor_ids.csv``: common SPI NOR parts (standard 25-series commands).
 * ``spi_nand.csv``: SPI NAND parts.
 
@@ -105,6 +106,10 @@ class NandChip:
     source: str = "nando"
     t_prog_ms: int = 5
     t_bers_ms: int = 20
+    ecc_bits: int = 0               # required host ECC: bits per ecc_step bytes (0 = unknown)
+    ecc_step: int = 512
+    verified: bool = True           # False: entry not yet checked on real hardware
+    note: str = ""
 
     @property
     def pages_per_block(self) -> int:
@@ -130,10 +135,15 @@ class NandChip:
         ids = [i for i in self.ids if i is not None]
         return bool(ids) and len(idb) >= len(ids) and all(idb[k] == v for k, v in enumerate(ids))
 
+    @property
+    def ecc_text(self) -> str:
+        return "%d-bit ECC per %d B" % (self.ecc_bits, self.ecc_step) if self.ecc_bits else ""
+
     def describe(self) -> str:
-        return "%s: %d MiB, page %d+%d, %d pages/block, %d blocks, %s" % (
+        return "%s: %d MiB, page %d+%d, %d pages/block, %d blocks, %s%s" % (
             self.name, self.total_size >> 20, self.page_size, self.spare_size,
-            self.pages_per_block, self.blocks, _volts(self.voltage))
+            self.pages_per_block, self.blocks, _volts(self.voltage),
+            ", needs " + self.ecc_text if self.ecc_bits else "")
 
 
 _TIMING_COLS = ["tCS", "tCLS", "tALS", "tCLR", "tAR", "tWP", "tRP", "tDS", "tCH", "tCLH",
@@ -162,6 +172,19 @@ def nand_chips() -> List[NandChip]:
                 timings_ns={k: v for k, v in t.items() if v is not None},
                 voltage=volts.get(r[0], 3.3), source="nando"))
         except ValueError as e:
+            log.warning("chip DB: skipping parallel NAND %s (%s)", r[0], e)
+    for r in _rows("nand_extra.csv"):
+        # name, ID, page, spare, ppb, blocks, row cyc, col cyc, bb off, voltage, ecc bits, ecc step,
+        # verified, note
+        try:
+            page, spare, ppb, blocks = (int(v) for v in r[2:6])
+            chips.append(NandChip(
+                name=r[0], ids=tuple(_hexbytes(r[1])), page_size=page, spare_size=spare,
+                block_size=page * ppb, total_size=page * ppb * blocks,
+                row_cycles=int(r[6]), col_cycles=int(r[7]), bb_mark_off=int(r[8]),
+                voltage=float(r[9]), ecc_bits=int(r[10]), ecc_step=int(r[11]),
+                verified=r[12] == "1", note=",".join(r[13:]).strip(), source="nsprog"))
+        except (ValueError, IndexError) as e:
             log.warning("chip DB: skipping parallel NAND %s (%s)", r[0], e)
     return chips
 

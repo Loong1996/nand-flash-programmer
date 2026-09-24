@@ -30,7 +30,7 @@ def build_onfi_param_page(*, page: int, spare: int, ppb: int, blocks: int,
                           row_cycles: int = 3, col_cycles: int = 2,
                           manufacturer: str = "NSPROG", model: str = "EMU-NAND",
                           jedec_id: int = 0xEF, t_prog_us: int = 700,
-                          t_bers_us: int = 10000, t_r_us: int = 25) -> bytes:
+                          t_bers_us: int = 10000, t_r_us: int = 25, ecc_bits: int = 1) -> bytes:
     pp = bytearray(256)
     pp[0:4] = b"ONFI"
     struct.pack_into("<H", pp, 4, 0x0002)            # ONFI 1.0
@@ -47,7 +47,7 @@ def build_onfi_param_page(*, page: int, spare: int, ppb: int, blocks: int,
     pp[101] = (col_cycles << 4) | row_cycles
     pp[102] = 1                                        # bits per cell
     struct.pack_into("<H", pp, 103, max(1, blocks // 50))
-    pp[112] = 1                                        # ECC bits required
+    pp[112] = ecc_bits                                 # ECC bits required
     struct.pack_into("<H", pp, 129, 0x0001)            # timing mode 0
     struct.pack_into("<H", pp, 133, t_prog_us)
     struct.pack_into("<H", pp, 135, t_bers_us)
@@ -63,7 +63,8 @@ class NandModel:
     def __init__(self, *, page=2048, spare=64, ppb=64, blocks=64,
                  ids=b"\x2C\xF1\x80\x95\x04", onfi=True, bad_blocks=(3,),
                  row_cycles=3, col_cycles=2, small_page=False,
-                 t_r=25, t_prog=300, t_bers=2000):
+                 t_r=25, t_prog=300, t_bers=2000,
+                 manufacturer="NSPROG", model="EMU-NAND", ecc_bits=1):
         self.page, self.spare, self.ppb, self.blocks = page, spare, ppb, blocks
         self.ids = bytes(ids)
         self.onfi = onfi
@@ -71,7 +72,9 @@ class NandModel:
         self.small_page = small_page
         self.t_r, self.t_prog, self.t_bers = t_r, t_prog, t_bers
         self.param = build_onfi_param_page(page=page, spare=spare, ppb=ppb, blocks=blocks,
-                                           row_cycles=row_cycles, col_cycles=col_cycles)
+                                           row_cycles=row_cycles, col_cycles=col_cycles,
+                                           manufacturer=manufacturer, model=model,
+                                           jedec_id=self.ids[0], ecc_bits=ecc_bits)
         self.pages: Dict[int, bytearray] = {}
         for b in bad_blocks:
             pg = bytearray(b"\xff" * self.pb)
@@ -731,12 +734,18 @@ class EmulatorLink(Link):
         spi: Union[SpiNorModel, SpiNandModel, None] = None
         if spec in ("all", "nand", "all-spinand"):
             nand = NandModel(blocks=256)
+        if spec in ("w29n02kv", "w29n02kv-noonfi"):
+            # Winbond W29N02KVxxAF geometry and ID (ONFI strings are illustrative)
+            nand = NandModel(page=2048, spare=128, ppb=64, blocks=2048,
+                             ids=bytes.fromhex("EFDA109506"), onfi=spec == "w29n02kv",
+                             manufacturer="WINBOND", model="W29N02KVxxAF", ecc_bits=4)
         if spec in ("all", "spinor"):
             spi = SpiNorModel()
         if spec in ("spinand", "all-spinand"):
             spi = SpiNandModel(blocks=128)
         if nand is None and spi is None:
-            raise ValueError("unknown emulator spec %r (all, nand, spinor, spinand, all-spinand)" % spec)
+            raise ValueError("unknown emulator spec %r (all, nand, spinor, spinand, all-spinand, "
+                             "w29n02kv, w29n02kv-noonfi)" % spec)
         return cls(nand, spi)
 
     def write(self, data: bytes) -> None:

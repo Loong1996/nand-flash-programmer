@@ -323,7 +323,8 @@ def nand_chip_from_onfi(p: OnfiParams, id_bytes: bytes) -> chipdb.NandChip:
         name=name, page_size=p.page_size, block_size=p.page_size * p.pages_per_block,
         total_size=p.page_size * p.pages_per_block * p.blocks, spare_size=p.spare_size,
         bb_mark_off=0, row_cycles=p.row_cycles, col_cycles=p.col_cycles,
-        ids=tuple(id_bytes[:5]), voltage=chipdb.guess_voltage(name), source="onfi")
+        ids=tuple(id_bytes[:5]), voltage=chipdb.guess_voltage(name), source="onfi",
+        ecc_bits=p.ecc_bits if 0 < p.ecc_bits < 0xFF else 0, ecc_step=512)
     return chip
 
 
@@ -825,7 +826,10 @@ def detect_nand(dev: Device, chip_name: Optional[str] = None, use_rb: bool = Tru
             same = (chip.page_size, chip.spare_size, chip.block_size, chip.total_size) == \
                    (ochip.page_size, ochip.spare_size, ochip.block_size, ochip.total_size)
             ochip = dataclasses.replace(ochip, name=chip.name, voltage=chip.voltage,
-                                        bb_mark_off=chip.bb_mark_off, source="nando+onfi")
+                                        bb_mark_off=chip.bb_mark_off, source="%s+onfi" % chip.source,
+                                        ecc_bits=chip.ecc_bits or ochip.ecc_bits,
+                                        ecc_step=chip.ecc_step if chip.ecc_bits else ochip.ecc_step,
+                                        verified=chip.verified, note=chip.note)
             det.messages.append("parallel NAND: %s (database + ONFI%s, ID %s)" % (
                 chip.name, "" if same else "; geometry taken from ONFI",
                 idb[:5].hex().upper()))
@@ -835,13 +839,25 @@ def detect_nand(dev: Device, chip_name: Optional[str] = None, use_rb: bool = Tru
         if not ochip.voltage:
             det.messages.append("note: supply voltage unknown - check the datasheet "
                                 "(this programmer is 3.3V only)")
+        _nand_notes(det, ochip)
         return ParallelNand(dev, ochip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
     if chip is not None:
         det.messages.append("parallel NAND: %s (database, ID %s)" % (chip.name, idb[:5].hex().upper()))
+        _nand_notes(det, chip)
         return ParallelNand(dev, chip, use_rb=use_rb, id_bytes=idb, onfi=onfi)
     det.messages.append("parallel NAND: unknown chip ID %s (not in database, no ONFI); "
                         "use --chip to choose a database entry" % idb[:5].hex().upper())
     return None
+
+
+def _nand_notes(det: Detection, chip: chipdb.NandChip) -> None:
+    if chip.ecc_bits:
+        det.messages.append("note: %s needs %s, computed by the SoC and kept in the spare area; nsprog "
+                            "copies raw pages (keep the spare: no --no-oob). Check a dump with "
+                            "'nsprog ecc check -c %s --ecc bch%d FILE' (Linux BCH layout)"
+                            % (chip.name, chip.ecc_text, chip.name, chip.ecc_bits))
+    if not chip.verified:
+        det.messages.append("note: %s is a new database entry, not yet verified on hardware" % chip.name)
 
 
 def detect_spi(dev: Device, chip_name: Optional[str] = None, ecc: bool = False,

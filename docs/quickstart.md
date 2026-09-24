@@ -81,12 +81,14 @@ nsprog doctor
 - **单根线**：`nsprog pintest --pin CE# --mode toggle`（2 Hz 翻转 30 秒），`--mode low/high` 保持电平，`nsprog pintest --list` 列出可测的线。适合配合万用表或 LED 查线。
 - 旧的检查方法仍然可用：`nsprog pins` 显示 `NAND IO[7:0]` 必须是 `11111111`，`R/B#` 必须是 high。
 
-## 5. 第一颗芯片：W29N02KV（TSOP48）
+## 5. 第一颗芯片：W29N02KVSIAF（TSOP48）
 
-断电，放入芯片，合上翻盖，重新插 USB：
+W29N02KVSIAF：华邦 2 Gbit（256 MiB）3.3V SLC，ID `EF DA 10 95 06`，每页 2048 + 128 字节，每块 64 页，共 2048 块。芯片库里有它的条目，同时它支持 ONFI，两种方式都能识别。没有硬件时可以先用模拟器看看效果：`nsprog -p emu:w29n02kv info`。
+
+断电，放入芯片（注意 1 脚方向），合上翻盖，重新插 USB：
 
 ```bash
-nsprog info                                # 应识别出 Winbond W29N02KV（ONFI）或数据库型号
+nsprog info                                # 应显示 W29N02KVSIAF (database + ONFI, ID EFDA109506)
 nsprog badblocks -t nand                   # 扫描出厂坏块
 nsprog read -t nand backup.bin             # 整片备份（含 OOB），先做这个！
 nsprog verify -t nand backup.bin --oob     # 再读一遍比较，确认读取稳定
@@ -101,6 +103,11 @@ nsprog erase -t nand                       # 整片擦除（自动跳过出厂�
 ```
 
 常用选项：`--start-block N --blocks N`（或 `--offset 0x20000 --length 1M`）、`--bb skip|keep|force`、`--no-rb`（R/B# 没接时）。
+
+关于 ECC：W29N02KV 要求主控做每 512 字节 4 位的 ECC，ECC 字节存放在每页的 128 字节备用区（OOB）里。芯片本身不做 ECC，nsprog 也不改动数据，读写的都是原始页（主数据 + OOB）。所以：
+
+- 备份、写回时都**保留 OOB**，不要加 `--no-oob`，否则设备上的 ECC 会丢失；
+- 检查读出的镜像有没有位翻转：`nsprog ecc check -c W29N02KVSIAF --ecc bch4 backup.bin`。这要求设备用的是 Linux 通用的 BCH 布局；如果主控用的布局不同，要用 `--ecc-offset` 指定 ECC 在 OOB 中的位置。
 
 ## 6. SPI Flash（SOP8 / WSON8 / SOIC16）
 
