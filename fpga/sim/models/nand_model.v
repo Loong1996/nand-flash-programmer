@@ -49,6 +49,7 @@ module nand_model #(
     integer    violations;
     integer    programs, erases;
     real       t_we_fall, t_we_rise, t_io, t_ctl, t_addr_rise;
+    real       t_re_fall, t_ce_fall;
     reg        first_data;
 
     assign rb_n = busy ? 1'b0 : 1'bz;
@@ -61,6 +62,7 @@ module nand_model #(
         busy = 0; drive = 0; fail = 0; mode = M_IDLE; prev_mode = M_IDLE; resume = 0;
         violations = 0; programs = 0; erases = 0; naddr = 0; ptr = 0; first_data = 0;
         t_we_fall = 0; t_we_rise = -1000; t_io = 0; t_ctl = 0; t_addr_rise = -1000;
+        t_re_fall = -1000; t_ce_fall = -1000;
         for (i = 0; i < SIZE; i = i + 1) mem[i] = 8'hFF;
         if (BAD_BLOCK >= 0 && BAD_BLOCK < BLOCKS)
             mem[BAD_BLOCK * PPB * PB + PAGE] = 8'h00;
@@ -289,5 +291,12 @@ module nand_model #(
         drive = 0;
     end
 
-    always @(posedge ce_n) drive = 0;
+    // Strobe glitches (e.g. from pad muxing) would issue spurious reads/commands on a real chip.
+    always @(negedge re_n) t_re_fall = $realtime;
+    always @(negedge ce_n) t_ce_fall = $realtime;
+    always @(posedge re_n) if (!ce_n && $realtime - t_re_fall < 10.0) violation("RE# glitch (tRP)");
+    always @(posedge ce_n) begin
+        if ($realtime > 100.0 && $realtime - t_ce_fall < 10.0) violation("CE# glitch");
+        drive = 0;
+    end
 endmodule

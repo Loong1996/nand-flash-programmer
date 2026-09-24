@@ -267,14 +267,25 @@ module top #(
     // Pin test index: 0-7 NAND IO0-7, 8 CLE, 9 ALE, 10 WE#, 11 RE#, 12 CE#,
     // 13 WP#, 14 R/B#, 15 SPI CS#, 16 SCK, 17 IO0/DI, 18 IO1/DO, 19 IO2, 20 IO3.
     // In test mode every one of these pins is released except the selected one.
-    wire        t_on = (t_mode != 3'd0);
-    wire [20:0] t_drv;
+    // The test controls are registered so that each pad's OE and O come from a
+    // single LUT fed by flip-flops, and a released pin keeps its normal output
+    // value (only OE drops; idle levels equal the pulls): entering, leaving or
+    // changing the test mode can never glitch a strobe such as WE#, RE# or CE#.
+    reg         t_on;
+    reg  [20:0] t_drv;
+    reg         t_val_r;
     genvar gi;
-    generate
-        for (gi = 0; gi < 21; gi = gi + 1) begin : g_tdrv
-            assign t_drv[gi] = t_on && (t_mode >= 3'd2) && (t_sel == gi);
+    always @(posedge clk) begin
+        if (rst) begin
+            t_on    <= 1'b0;
+            t_drv   <= 21'd0;
+            t_val_r <= 1'b0;
+        end else begin
+            t_on    <= (t_mode != 3'd0);
+            t_drv   <= (t_mode >= 3'd2 && t_sel < 5'd21) ? (21'd1 << t_sel) : 21'd0;
+            t_val_r <= t_val;
         end
-    endgenerate
+    end
 
     // Normal-mode output enables and values, then one tri-state per pin.
     wire [20:0] n_oe = {
@@ -288,7 +299,7 @@ module top #(
         1'b1, e_wp_hi, ~e_ce, ~e_re, ~e_we, e_ale, e_cle,
         e_io_o};
     wire [20:0] p_oe = t_on ? t_drv : n_oe;
-    wire [20:0] p_o  = t_on ? {21{t_val}} : n_o;
+    wire [20:0] p_o  = (t_drv & {21{t_val_r}}) | (~t_drv & n_o);
 
     generate
         for (gi = 0; gi < 8; gi = gi + 1) begin : g_nio
