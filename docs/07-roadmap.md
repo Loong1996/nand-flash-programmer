@@ -4,7 +4,7 @@
 
 | 项目 | 验证方式 |
 |---|---|
-| FPGA 微操作引擎（UART + FT232H 245 FIFO、NAND 总线、SPI、超时、波特率协商） | 综合 + 布局布线（27 MHz 时序通过，最高约 64 MHz）；cocotb 端到端仿真 |
+| FPGA 微操作引擎（UART + FT232H 245 FIFO、NAND 总线、SPI、超时、波特率协商） | 综合 + 布局布线（27 MHz 时序通过，最高约 60 MHz）；cocotb 端到端仿真 |
 | NSP v1 协议 | 仿真 + 软件模拟器 |
 | 上位机：并口 NAND（大页/小页、ONFI、R/B# 或状态轮询）、SPI NOR（SFDP、4 字节地址、DataFlash）、SPI NAND | 模拟器单元测试 + RTL 仿真 |
 | 读 / 写 / 擦 / 校验 / 查空 / 坏块（skip / keep / force），写前擦除、跳过全 FF 页、写后校验 | 同上 |

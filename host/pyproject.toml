@@ -14,6 +14,7 @@ dependencies = [
     "pyftdi>=0.55",
     "fastapi>=0.100",
     "uvicorn>=0.23",
+    "websockets>=10",
 ]
 
 [project.optional-dependencies]

@@ -15,7 +15,7 @@ from simhost import (FtModel, SimDevice, SimFtLink, SimUartLink, UartModel, brid
 
 from nsprog import jobs  # noqa: E402  (path set up by simhost)
 from nsprog import protocol as P  # noqa: E402
-from nsprog.flash import SpiNand, SpiNor, detect  # noqa: E402
+from nsprog.flash import SpiNand, SpiNor, detect, set_spi_clock  # noqa: E402
 
 SPI_NAND = os.environ.get("NSPROG_SIM_SPI") == "nand"
 
@@ -68,7 +68,8 @@ async def ft_info_echo(dut):
 @cocotb.test(skip=SPI_NAND)
 async def ft_parallel_nand(dut):
     await start(dut)
-    ft, dev = ft_device(dut, stall_every=97)
+    # Long host stalls fill the 4 KiB TX FIFO (exercises FIFO-full handling).
+    ft, dev = ft_device(dut, stall_every=5000, stall_ns=1_500_000)
 
     def host():
         dev.open(negotiate=False)
@@ -123,6 +124,7 @@ async def ft_spi_nor(dut):
         det = detect(dev, want="spi")
         drv = det.spi
         assert isinstance(drv, SpiNor) and drv.name == "W25Q16JV", det.messages
+        assert set_spi_clock(dev, 13.5) == 13.5          # fastest SPI clock
         assert drv.size == 2 * 1024 * 1024
         image = rnd(9000, seed=3)
         rep = jobs.write(drv, image, start=1)
@@ -148,7 +150,7 @@ async def uart_baud_and_nand_id(dut):
         det = detect(dev, want="nand")
         assert det.nand is not None and det.nand_id[:2] == bytes([0x2C, 0xF1])
         out = io.BytesIO()
-        jobs.read(det.nand, out, start=0, count=1, oob=False)
+        jobs.read(det.nand, out, start=7, count=1, oob=False)   # block no other test touches
         assert out.getvalue() == b"\xff" * det.nand.block_size
         dev.close()
     await bridge(host)()
@@ -166,6 +168,7 @@ async def ft_spi_nand(dut):
         det = detect(dev, want="spi")
         drv = det.spi
         assert isinstance(drv, SpiNand) and drv.name == "W25N01GV", det.messages
+        set_spi_clock(dev, 13.5)
         drv.blocks = 4                         # model size
         assert drv.bad_blocks([2])[2]
         img = bytearray(rnd(2 * drv.pages_per_block * drv.raw_page, seed=9))

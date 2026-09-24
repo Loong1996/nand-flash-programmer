@@ -41,11 +41,12 @@ async def start(dut, cycles=400):
 class FtModel:
     """FT232H in 245 asynchronous FIFO mode, seen from the FPGA pins."""
 
-    def __init__(self, dut, stall_every=0):
+    def __init__(self, dut, stall_every=0, stall_ns=3000):
         self.dut = dut
         self.rxq = collections.deque()     # host -> FPGA
         self.txq = bytearray()             # FPGA -> host
         self.stall_every = stall_every
+        self.stall_ns = stall_ns
         self.errors = 0
         dut.ft_rxf_n.value = 1
         dut.ft_txe_n.value = 0
@@ -87,7 +88,7 @@ class FtModel:
             d.ft_txe_n.value = 1
             n += 1
             if self.stall_every and n % self.stall_every == 0:
-                await Timer(3000, "ns")        # host not reading for a while
+                await Timer(self.stall_ns, "ns")   # host not reading for a while
             else:
                 await Timer(50, "ns")
             d.ft_txe_n.value = 0

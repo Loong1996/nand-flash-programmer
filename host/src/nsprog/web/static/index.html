@@ -232,7 +232,7 @@ function renderJob(j) {
   if (j.report) html += `<div class="${j.report.ok ? 'ok' : 'bad'}"><pre>${j.report.summary}</pre></div>`;
   if (j.download && j.state === 'done') html += `<p><a class="dl" href="${j.download}">下载读取结果</a></p>`;
   $('result').innerHTML = html;
-  if (lines) $('log').textContent = lines;
+  $('log').textContent = lines || (running ? '…' : '（无附加信息）');
 }
 function params(extra) {
   const p = new URLSearchParams({target, start: $('start').value || 0, spi_mhz: $('spiMhz').value,
@@ -269,13 +269,15 @@ $('file').addEventListener('change', async () => {
   catch (e) { note('无法开始: ' + e.message); }
 });
 
+let wsFails = 0;
 function live() {
-  let ws;
+  if (wsFails >= 2) return poll();          // no WebSocket support: fall back to polling
+  let ws, opened = false;
   try { ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws'); }
   catch (e) { return poll(); }
+  ws.onopen = () => { opened = true; wsFails = 0; };
   ws.onmessage = ev => render(JSON.parse(ev.data));
-  ws.onclose = () => setTimeout(live, 1500);
-  ws.onerror = () => { ws.close(); };
+  ws.onclose = () => { if (!opened) wsFails++; setTimeout(live, opened ? 1500 : 300); };
 }
 async function poll() { try { render(await api('/api/state')); } catch (e) {} setTimeout(poll, 600); }
 

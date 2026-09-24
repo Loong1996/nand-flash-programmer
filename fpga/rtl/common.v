@@ -39,8 +39,11 @@ module fifo8 #(
     reg [7:0]  mem [0:(1<<AW)-1];
     reg [AW:0] wp, rp;
 
+    // Occupancy must be computed at pointer width: in a 32-bit context the
+    // subtraction goes negative after the pointers wrap and "full" is missed.
+    wire [AW:0] used = wp - rp;
     wire mem_empty = (wp == rp);
-    assign full    = ((wp - rp) == (1 << AW));
+    assign full    = (used == {1'b1, {AW{1'b0}}});
     wire do_wr     = wr && !full;
     wire fetch     = !mem_empty && (!valid || rd);
 
@@ -68,7 +71,7 @@ module fifo8 #(
         end
     end
 
-    assign level = (wp - rp) + {{AW{1'b0}}, valid};
+    assign level = used + {{AW{1'b0}}, valid};
 endmodule
 
 // Stretches single-cycle activity pulses so they are visible on an LED.
