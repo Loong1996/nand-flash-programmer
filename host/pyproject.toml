@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nsprog"
-version = "0.3.0"
+version = "0.4.0"
 description = "Host software for the nsprog FPGA NAND / SPI flash programmer"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+fs = ["lz4", "zstandard"]          # lz4 / zstd compressed SquashFS, UBIFS (LZO, zlib, xz built in)
 
 [project.scripts]
 nsprog = "nsprog.cli:main"

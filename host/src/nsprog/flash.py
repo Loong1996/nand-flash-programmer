@@ -10,6 +10,7 @@ them alike:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
@@ -124,16 +125,25 @@ class ParallelNand(FlashDriver):
         return self.chip.describe()
 
     # bus timing -------------------------------------------------------------
-    #: T_SETUP, T_WP, T_WH, T_RP, T_REH, T_WHR, T_ADL, T_WB in 37 ns clocks.
+    #: T_SETUP, T_WP, T_WH, T_RP, T_REH, T_WHR, T_ADL, T_WB in ns; converted to FPGA
+    #: clocks (rounded up) with the clock the gateware reports.
     TIMINGS = {
-        "safe": (2, 3, 2, 3, 2, 6, 8, 6),     # ONFI mode 0 with margin (default)
-        "medium": (1, 2, 1, 2, 1, 3, 3, 4),   # ONFI mode 1: tRC 111 ns
-        "fast": (1, 1, 1, 1, 1, 3, 3, 4),     # ONFI mode 2+: tRC 74 ns (13.5 MB/s bus)
+        "safe": (74, 111, 74, 111, 74, 222, 296, 222),    # ONFI mode 0 with margin (default)
+        "medium": (37, 74, 37, 74, 37, 111, 111, 148),    # ONFI mode 1: tRC 111 ns
+        "fast": (37, 37, 37, 37, 37, 111, 111, 148),      # ONFI mode 2+: tRC 74 ns (13.5 MB/s bus)
+        "turbo": (18, 18, 18, 37, 18, 111, 111, 148),     # ONFI mode 4+ at 54 MHz: tRC 55 ns (18 MB/s)
     }
+
+    def timing_clocks(self, profile: str) -> Tuple[int, ...]:
+        clk = self.dev.info.clk_hz if self.dev.opened else CLK_HZ
+        return tuple(max(1, math.ceil(ns * clk / 1e9 - 1e-6)) for ns in self.TIMINGS[profile])
 
     def auto_timing(self) -> str:
         """Fastest profile the chip's ONFI timing modes allow."""
         modes = self.onfi.timing_modes if self.onfi else 0
+        clk = self.dev.info.clk_hz if self.dev.opened else CLK_HZ
+        if modes & ~0xF and clk >= 50_000_000:
+            return "turbo"
         if modes & ~0x3:
             return "fast"
         if modes & 0x2:
@@ -141,7 +151,7 @@ class ParallelNand(FlashDriver):
         return "safe"
 
     def set_timing(self, profile: str = "safe") -> str:
-        """Program the FPGA bus timing: ``safe`` | ``medium`` | ``fast`` | ``auto``.
+        """Program the FPGA bus timing: ``safe`` | ``medium`` | ``fast`` | ``turbo`` | ``auto``.
 
         Faster profiles need short wires; stay on ``safe`` with long dupont leads."""
         if profile == "auto":
@@ -149,7 +159,7 @@ class ParallelNand(FlashDriver):
         if profile not in self.TIMINGS:
             raise ValueError("unknown NAND timing profile %r" % profile)
         b = P.Batch()
-        for reg, v in enumerate(self.TIMINGS[profile]):
+        for reg, v in enumerate(self.timing_clocks(profile)):
             b.set_reg(P.REG_T_SETUP + reg, v)
         self.dev.run(b)
         self.timing = profile
@@ -345,9 +355,42 @@ class SpiNand(FlashDriver):
         self.voltage = chip.voltage
         self.ecc = ecc
         self.read_batch = max(1, 65536 // chip.raw_page)
+        #: cache read bus: single (03h) | dual (3Bh) | dual-io (BBh) | quad (6Bh) | quad-io (EBh)
+        self.io = "single"
+        self.quad_write = False     # 32h quad program load
+        self._qe_set = False
 
     def describe(self) -> str:
         return self.chip.describe()
+
+    #: read mode -> (opcode, address width, dummy bytes after the column, data width)
+    BUSES = {"single": (0x03, 1, 1, 1), "dual": (0x3B, 1, 1, 2), "quad": (0x6B, 1, 1, 4),
+             "dual-io": (0xBB, 2, 1, 2), "quad-io": (0xEB, 4, 2, 4)}
+    #: vendors whose quad transfers need QE (feature B0h bit 0): GigaDevice, Macronix
+    QE_VENDORS = (0xC8, 0xC2)
+
+    def _bus_check(self, quad_write: bool = False) -> None:
+        io = "single" if self.io == "auto" else self.io
+        if io not in self.BUSES:
+            raise FlashError("unknown SPI read mode %r" % self.io)
+        wide = io != "single" or quad_write
+        if not wide:
+            return
+        caps = self.dev.info.caps
+        if not caps & P.CAP_SPI_WIDE and not (io == "quad" and not quad_write and caps & P.CAP_QSPI):
+            raise FlashError("dual / quad SPI NAND transfers need gateware 1.3 (nsprog fpga-flash)")
+        if self.chip.read_dummy_first and io != "single":
+            raise FlashError("%s: only single-bit reads are supported for this chip" % self.name)
+        if ("quad" in io or quad_write) and self.chip.ids[:1] and self.chip.ids[0] in self.QE_VENDORS:
+            cfg = self.get_feature(0xB0)
+            if not cfg & 1:
+                self.set_feature(0xB0, cfg | 1)
+                self._qe_set = True
+
+    def _bus_end(self) -> None:
+        if self._qe_set:
+            self._qe_set = False
+            self.set_feature(0xB0, self.get_feature(0xB0) & ~1)
 
     @staticmethod
     def _cmd(b: P.Batch, data: bytes) -> None:
@@ -396,37 +439,66 @@ class SpiNand(FlashDriver):
         self._cmd(b, b"\x13" + self._row(row))
         ready = self._poll(b, 10)
         cb = self._col(row, col).to_bytes(2, "big")
+        io = "single" if self.io == "auto" else self.io
+        op, aw, dummy, dw = self.BUSES[io]
         b.spi_cs(True)
-        b.spi_write(b"\x03" + (b"\x00" + cb if self.chip.read_dummy_first else cb + b"\x00"))
-        data = b.spi_read(n)
+        if io == "single":
+            b.spi_write(b"\x03" + (b"\x00" + cb if self.chip.read_dummy_first else cb + b"\x00"))
+            data = b.spi_read(n)
+        else:
+            if aw == 1:
+                b.spi_write(bytes([op]) + cb + b"\x00" * dummy)
+            else:
+                b.spi_write(bytes([op]))
+                b.spi_wide_write(cb, aw)
+                b.spi_wide_read(dummy, aw)          # 4 dummy clocks, lines released
+            if io == "quad" and not self.dev.info.caps & P.CAP_SPI_WIDE:
+                data = b.spi_read4(n)
+            else:
+                data = b.spi_wide_read(n, dw)
         b.spi_cs(False)
         return data, ready
 
     def read_pages(self, first: int, count: int, oob: bool = True) -> Iterator[bytes]:
         n = self.raw_page if oob else self.page_size
         page, end = first, first + count
-        while page < end:
-            b = P.Batch()
-            items = [self._read_ops(b, row, 0, n) for row in range(page, min(end, page + self.read_batch))]
-            self.dev.run(b)
-            for data, ready in items:
-                if not ready.value.ok:
-                    raise FlashError("SPI NAND stayed busy during read")
-                yield data.value
-            page += len(items)
+        self._bus_check()
+        try:
+            while page < end:
+                b = P.Batch()
+                rows = range(page, min(end, page + self.read_batch))
+                items = [self._read_ops(b, row, 0, n) for row in rows]
+                self.dev.run(b)
+                for data, ready in items:
+                    if not ready.value.ok:
+                        raise FlashError("SPI NAND stayed busy during read")
+                    yield data.value
+                page += len(items)
+        finally:
+            self._bus_end()
 
     def program_pages(self, items: Sequence[Tuple[int, bytes]]) -> List[OpResult]:
+        if self.quad_write:
+            self._bus_check(quad_write=True)
         b = P.Batch()
         polls = []
         for row, data in items:
             self._cmd(b, b"\x06")
             b.spi_cs(True)
-            b.spi_write(b"\x02" + self._col(row, 0).to_bytes(2, "big"))
-            b.spi_write(data)
+            if self.quad_write:
+                b.spi_write(b"\x32" + self._col(row, 0).to_bytes(2, "big"))
+                b.spi_wide_write(data, 4)
+            else:
+                b.spi_write(b"\x02" + self._col(row, 0).to_bytes(2, "big"))
+                b.spi_write(data)
             b.spi_cs(False)
             self._cmd(b, b"\x10" + self._row(row))
             polls.append((row, self._poll(b, 20)))
-        self.dev.run(b)
+        try:
+            self.dev.run(b)
+        finally:
+            if self.quad_write:
+                self._bus_end()
         out = []
         for row, r in polls:
             v = r.value
@@ -491,7 +563,11 @@ class SpiNor(FlashDriver):
         self.four = False
         self.read_batch = max(1, 65536 // chip.page_size)
         self.quad = "auto"          # off | auto (only if QE is already set) | on (set QE)
-        self.quad_active = False
+        #: read bus: auto | single | dual (1-1-2) | dual-io (1-2-2) | quad (1-1-4) | quad-io (1-4-4)
+        self.io = "auto"
+        self.quad_write = False     # 32h quad page program (needs QE, gateware >= 1.3)
+        self.bus: Optional[str] = None      # read mode chosen for the current operation
+        self.last_bus: Optional[str] = None # ... and for the last one (None = single)
         self._qe_restore: Optional[bool] = None
 
     def describe(self) -> str:
@@ -613,12 +689,43 @@ class SpiNor(FlashDriver):
     #: SFDP quad-enable requirement -> (status register 1 or 2, QE bit)
     QE_BITS = {1: (2, 1), 2: (1, 6), 4: (2, 1), 5: (2, 1), 6: (2, 1)}
 
+    #: read mode -> (address/mode/dummy width, data width, needs QE)
+    BUSES = {"dual": (1, 2, False), "dual-io": (2, 2, False), "quad": (1, 4, True), "quad-io": (4, 4, True)}
+    AUTO_ORDER = ("quad-io", "quad", "dual-io", "dual")
+
+    @property
+    def quad_active(self) -> bool:
+        """The last read used a quad mode."""
+        return self.last_bus in ("quad", "quad-io")
+
+    def _modes(self) -> Dict[str, Tuple[int, int, int]]:
+        m = dict(self.chip.read_modes)
+        if "quad" not in m and self.chip.quad_cmd:
+            m["quad"] = (self.chip.quad_cmd, 0, self.chip.quad_dummy)
+        return m
+
+    def bus_usable(self, name: str) -> str:
+        """'' if the read mode can be used, otherwise the reason."""
+        if not self.dev.opened:
+            return "not connected"
+        m = self._modes().get(name)
+        if m is None:
+            return "the chip does not announce %s reads (SFDP)" % name
+        aw, _dw, qe = self.BUSES[name]
+        caps = self.dev.info.caps
+        if not caps & P.CAP_SPI_WIDE and not (name == "quad" and caps & P.CAP_QSPI):
+            return "gateware %s has no dual / quad transfers (update with nsprog fpga-flash)" % \
+                self.dev.info.gw_version
+        _op, mode_clk, dummy_clk = m
+        if (mode_clk * aw) % 8 or (dummy_clk * aw) % 8:
+            return "%d mode + %d dummy clocks are not whole bytes" % (mode_clk, dummy_clk)
+        if qe and (self.chip.qer not in self.QE_BITS or self.chip.status_cmd != 0x05):
+            return "unknown quad-enable bit (SFDP QER %d)" % self.chip.qer
+        return ""
+
     @property
     def quad_capable(self) -> bool:
-        c = self.chip
-        return bool(c.quad_cmd == 0x6B and c.qer in self.QE_BITS and c.quad_dummy % 8 == 0
-                    and c.status_cmd == 0x05 and self.dev.opened
-                    and self.dev.info.caps & P.CAP_QSPI)
+        return not self.bus_usable("quad")
 
     def _qe(self) -> bool:
         reg, bit = self.QE_BITS[self.chip.qer]
@@ -646,22 +753,47 @@ class SpiNor(FlashDriver):
         if self._qe() != on:
             raise FlashError("could not %s the quad-enable bit" % ("set" if on else "clear"))
 
+    def _ensure_qe(self, explicit: bool) -> bool:
+        """QE for a quad transfer: True when set (possibly by us; restored at the end)."""
+        if self.quad == "off":
+            return False
+        if self._qe():
+            return True
+        if self.quad != "on" and not explicit:
+            return False
+        self._set_qe(True)
+        self._qe_restore = False
+        return True
+
     def _quad_begin(self) -> None:
-        self.quad_active = False
-        if self.quad == "off" or not self.quad_capable:
+        """Choose the read bus for this operation (and set QE if allowed)."""
+        self.bus = None
+        want = self.io
+        if want == "single":
+            self.last_bus = None
             return
-        if not self._qe():
-            if self.quad != "on":
-                return
-            self._set_qe(True)
-            self._qe_restore = False
-        self.quad_active = True
+        names = self.AUTO_ORDER if want == "auto" else (want,)
+        for name in names:
+            if name not in self.BUSES:
+                raise FlashError("unknown SPI read mode %r" % want)
+            why = self.bus_usable(name)
+            if why:
+                if want != "auto":
+                    raise FlashError("%s read not possible: %s" % (name, why))
+                continue
+            if self.BUSES[name][2] and not self._ensure_qe(want != "auto"):
+                if want != "auto":
+                    raise FlashError("%s read needs the quad-enable bit (use --spi-quad on)" % name)
+                continue
+            self.bus = self.last_bus = name
+            return
+        self.last_bus = None
 
     def _quad_end(self) -> None:
         if self._qe_restore is not None:
             restore, self._qe_restore = self._qe_restore, None
             self._set_qe(restore)
-            self.quad_active = False
+        self.bus = None
 
     # data -------------------------------------------------------------------
     def read(self, off: int, n: int) -> bytes:
@@ -678,9 +810,20 @@ class SpiNor(FlashDriver):
         c = self.chip
         addr = self._abytes(self._dev_addr(off))
         b.spi_cs(True)
-        if self.quad_active:
-            b.spi_write(bytes([c.quad_cmd or 0x6B]) + addr + b"\x00" * (c.quad_dummy // 8))
-            r = b.spi_read4(n)
+        if self.bus:
+            op, mode_clk, dummy_clk = self._modes()[self.bus]
+            aw, dw, _qe = self.BUSES[self.bus]
+            if aw == 1:                     # 1-1-x: address, mode and dummy clocks on MOSI
+                b.spi_write(bytes([op]) + addr + b"\x00" * ((mode_clk + dummy_clk) // 8))
+            else:                           # 1-x-x: address + mode bits wide, dummy clocks released
+                b.spi_write(bytes([op]))
+                b.spi_wide_write(addr + b"\xff" * (mode_clk * aw // 8), aw)
+                if dummy_clk:
+                    b.spi_wide_read(dummy_clk * aw // 8, aw)
+            if self.bus == "quad" and not self.dev.info.caps & P.CAP_SPI_WIDE:
+                r = b.spi_read4(n)
+            else:
+                r = b.spi_wide_read(n, dw)
         else:
             b.spi_write(bytes([c.read_cmd]) + addr + b"\x00" * c.read_dummy)
             r = b.spi_read(n)
@@ -708,16 +851,32 @@ class SpiNor(FlashDriver):
     def program_pages(self, items: Sequence[Tuple[int, bytes]]) -> List[OpResult]:
         self.enter_4byte()
         c = self.chip
-        b = P.Batch()
-        polls = []
-        for page, data in items:
-            self._wren(b)
-            b.spi_cs(True)
-            b.spi_write(bytes([c.write_cmd]) + self._abytes(self._dev_addr(page * self.page_size)))
-            b.spi_write(data[:self.page_size])
-            b.spi_cs(False)
-            polls.append((page, self._poll(b, 50)))
-        self.dev.run(b)
+        quad = False
+        if self.quad_write:
+            if not self.dev.info.caps & P.CAP_SPI_WIDE:
+                raise FlashError("quad page program needs gateware 1.3 (nsprog fpga-flash)")
+            if c.qer not in self.QE_BITS or c.status_cmd != 0x05 or not self._ensure_qe(True):
+                raise FlashError("quad page program needs the quad-enable bit")
+            quad = True
+        try:
+            b = P.Batch()
+            polls = []
+            for page, data in items:
+                self._wren(b)
+                b.spi_cs(True)
+                addr = self._abytes(self._dev_addr(page * self.page_size))
+                if quad:
+                    b.spi_write(b"\x32" + addr)
+                    b.spi_wide_write(data[:self.page_size], 4)
+                else:
+                    b.spi_write(bytes([c.write_cmd]) + addr)
+                    b.spi_write(data[:self.page_size])
+                b.spi_cs(False)
+                polls.append((page, self._poll(b, 50)))
+            self.dev.run(b)
+        finally:
+            if quad:
+                self._quad_end()
         return [OpResult(p, r.value.ok, r.value.status, "" if r.value.ok else "program timeout")
                 for p, r in polls]
 
@@ -946,7 +1105,7 @@ def _apply_sfdp(chip: chipdb.SpiNorChip, s) -> chipdb.SpiNorChip:
         erase_cmd=erase.get(small, chip.erase_cmd),
         addr_bytes=4 if s.size > 16 * 1024 * 1024 else 3,
         page_size=s.page_size if s.page_size in (256, 512) else chip.page_size,
-        quad_cmd=s.quad_cmd, quad_dummy=s.quad_dummy, qer=s.qer)
+        quad_cmd=s.quad_cmd, quad_dummy=s.quad_dummy, qer=s.qer, read_modes=dict(s.read_modes))
 
 
 def detect(dev: Device, *, nand_chip: Optional[str] = None, spi_chip: Optional[str] = None,
@@ -961,10 +1120,11 @@ def detect(dev: Device, *, nand_chip: Optional[str] = None, spi_chip: Optional[s
 
 def set_spi_clock(dev: Device, mhz: float) -> float:
     """Program SPI_DIV for the closest rate not above ``mhz``; returns the rate."""
+    clk = dev.info.clk_hz if dev.opened else CLK_HZ
     div = 0
-    while CLK_HZ / (2 * (div + 1)) > mhz * 1e6 and div < 255:
+    while clk / (2 * (div + 1)) > mhz * 1e6 and div < 255:
         div += 1
     b = P.Batch()
     b.set_reg(P.REG_SPI_DIV, div)
     dev.run(b)
-    return CLK_HZ / (2 * (div + 1)) / 1e6
+    return clk / (2 * (div + 1)) / 1e6

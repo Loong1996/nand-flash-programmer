@@ -23,7 +23,7 @@ RTL = ["common.v", "uart.v", "ft245.v", "spi_master.v", "nand_bus.v", "engine.v"
 DEVICE = "GW1NR-LV9QN88PC6/I5"
 FAMILY = "GW1N-9C"
 #: required fmax per clock net: 27 MHz crystal, 60 MHz FT232H CLKOUT (sync FIFO)
-TARGETS = {"clk": 27.0, "fclk": 60.0}
+TARGETS = {"clk": 54.0, "fclk": 60.0}
 #: placement seeds tried in order; the 60 MHz domain has little slack, so an
 #: unrelated change can move one seed just below target
 SEEDS = [1, 2, 3, 4, 5, 6, 7, 8]

@@ -7,9 +7,11 @@
 module engine #(
     parameter        CLK_HZ           = 27_000_000,
     parameter [15:0] BAUD_DIV_DEFAULT = 16'd234,
+    parameter [3:0]  FT_PHASE_DEFAULT = 4'd0,         // FT232H CLKOUT PLL phase (22.5 degree steps)
+    parameter [15:0] PH_WD_MS         = 16'd1000,     // phase confirmation window
     parameter [7:0]  RX_AW            = 8'd12,
     parameter [7:0]  GW_MAJOR         = 8'd1,
-    parameter [7:0]  GW_MINOR         = 8'd2,
+    parameter [7:0]  GW_MINOR         = 8'd3,
     parameter [7:0]  BOARD_ID         = 8'd1
 ) (
     input  wire        clk,
@@ -41,7 +43,10 @@ module engine #(
     output wire        spi_sck,
     output wire        spi_mosi,
     input  wire [3:0]  spi_io_i,       // {IO3, IO2, IO1 = MISO, IO0}
-    output reg         spi_qin,        // release IO0/IO2/IO3 (quad data phase)
+    output reg         spi_qin,        // release IO0/IO2/IO3 (dual / quad input phase)
+    output reg  [3:0]  ft_phase,       // sync FIFO clock phase (register 10)
+    output reg  [1:0]  spi_qout,       // wide write: 1 = drive IO1..IO0, 2 = drive IO3..IO0
+    output wire [3:0]  spi_qdat,       // data for the driven IO lines (IO0 = MOSI otherwise)
     output wire        spi_io2_hi,
     output wire        spi_io3_hi,
     output wire        spi_park,
@@ -68,13 +73,17 @@ module engine #(
                OP_NAND_WRITE  = 8'h13, OP_NAND_READ  = 8'h14, OP_NAND_WAIT = 8'h15,
                OP_NAND_POLL   = 8'h16,
                OP_SPI_CS      = 8'h20, OP_SPI_WRITE  = 8'h21, OP_SPI_READ  = 8'h22,
-               OP_SPI_XFER    = 8'h23, OP_SPI_POLL   = 8'h24, OP_SPI_READ4 = 8'h25;
+               OP_SPI_XFER    = 8'h23, OP_SPI_POLL   = 8'h24, OP_SPI_READ4 = 8'h25,
+               OP_SPI_WIDE    = 8'h26;
 
     localparam integer US_DIV       = CLK_HZ / 1_000_000;
     localparam integer MS_DIV       = CLK_HZ / 1_000;
     localparam [7:0]   IB_TIMEOUT   = 8'd100;   // ms, inter-byte timeout
     localparam [15:0]  BAUD_WD_MS   = 16'd1000; // ms, baud confirmation window
-    localparam [7:0]   CS_MIN_HIGH  = 8'd4;     // cycles
+    //: clock multiple of 27 MHz: reset values given in 27 MHz cycles are scaled by it
+    localparam integer CM           = (CLK_HZ + 13_500_000) / 27_000_000;
+    localparam [7:0]   CS_MIN_HIGH  = 4 * CM;   // cycles (148 ns)
+    localparam [15:0]  PT_SETTLE    = CLK_HZ / 100_000;   // 10 us
 
     // ------------------------------------------------------------------
     // Time bases
@@ -134,16 +143,16 @@ module engine #(
     );
 
     reg        sp_req;
-    reg        sp_quad;
+    reg  [1:0] sp_width;               // 0 = x1, 1 = x2, 2 = x4
     reg  [7:0] sp_tx;
     wire [7:0] sp_rx;
     wire       sp_ack, sp_rvalid, sp_busy;
     wire       spi_miso = spi_io_i[1];
 
     spi_master u_spi (
-        .clk(clk), .rst(rst), .div(spi_div), .sample_late(spi_late), .quad(sp_quad),
+        .clk(clk), .rst(rst), .div(spi_div), .sample_late(spi_late), .width(sp_width),
         .req(sp_req), .tx(sp_tx), .ack(sp_ack), .rx(sp_rx), .rvalid(sp_rvalid), .busy(sp_busy),
-        .sck(spi_sck), .mosi(spi_mosi), .qin(spi_io_i)
+        .sck(spi_sck), .mosi(spi_mosi), .qout(spi_qdat), .qin(spi_io_i)
     );
 
     assign nand_activity = nb_busy;
@@ -180,6 +189,9 @@ module engine #(
     reg [7:0]  flags;
     reg        baud_pending;
     reg [15:0] wd_ms;
+    reg        ph_pending;             // new FT phase not yet confirmed by an INFO
+    reg  [3:0] ph_prev;
+    reg [15:0] ph_ms;
     reg        result;
 
     assign err_led = flags[0] | flags[1] | flags[2];
@@ -207,7 +219,7 @@ module engine #(
                 4'd10: info_byte = CLK_HZ[23:16];
                 4'd11: info_byte = CLK_HZ[31:24];
                 4'd12: info_byte = RX_AW;
-                4'd13: info_byte = 8'hFB;          // caps: NAND8|SPI|FT245|UART|QSPI|SYNC245|PIN_TEST
+                4'd13: info_byte = 8'hFF;          // caps: NAND8|SPI|SPI_WIDE|FT245|UART|QSPI|SYNC245|PIN_TEST
                 4'd14: info_byte = flags;
                 default: info_byte = {7'd0, active_port};
             endcase
@@ -237,6 +249,7 @@ module engine #(
                 OP_SPI_XFER:   fixed_args = 4'd2;
                 OP_SPI_POLL:   fixed_args = 4'd1;
                 OP_SPI_READ4:  fixed_args = 4'd2;
+                OP_SPI_WIDE:   fixed_args = 4'd3;
                 default:       fixed_args = 4'd0;
             endcase
         end
@@ -250,7 +263,8 @@ module engine #(
                 OP_PIN_TEST,
                 OP_NAND_CE, OP_NAND_CMD, OP_NAND_ADDR, OP_NAND_WRITE, OP_NAND_READ,
                 OP_NAND_WAIT, OP_NAND_POLL,
-                OP_SPI_CS, OP_SPI_WRITE, OP_SPI_READ, OP_SPI_XFER, OP_SPI_POLL, OP_SPI_READ4:
+                OP_SPI_CS, OP_SPI_WRITE, OP_SPI_READ, OP_SPI_XFER, OP_SPI_POLL, OP_SPI_READ4,
+                OP_SPI_WIDE:
                     known_op = 1'b1;
                 default:
                     known_op = 1'b0;
@@ -295,29 +309,34 @@ module engine #(
 
         if (rst) begin
             st           <= S_FETCH;
-            t_setup      <= 8'd2;
-            t_wp         <= 8'd3;
-            t_wh         <= 8'd2;
-            t_rp         <= 8'd3;
-            t_reh        <= 8'd2;
-            t_whr        <= 8'd6;
-            t_adl        <= 8'd8;
-            t_wb         <= 8'd6;
-            spi_div      <= 8'd3;
+            t_setup      <= 2 * CM;
+            t_wp         <= 3 * CM;
+            t_wh         <= 2 * CM;
+            t_rp         <= 3 * CM;
+            t_reh        <= 2 * CM;
+            t_whr        <= 6 * CM;
+            t_adl        <= 8 * CM;
+            t_wb         <= 6 * CM;
+            spi_div      <= 4 * CM - 1;            // 3.375 MHz
             pin_ctrl     <= 8'b0000_0110;
             nand_ce_act  <= 1'b0;
             spi_cs_act   <= 1'b0;
             spi_qin      <= 1'b0;
+            spi_qout     <= 2'd0;
             test_mode    <= 3'd0;
             test_sel     <= 5'd0;
             nb_req       <= 1'b0;
             sp_req       <= 1'b0;
-            sp_quad      <= 1'b0;
+            sp_width     <= 2'd0;
             cs_gap       <= 8'd0;
             flags        <= 8'd0;
             baud_div     <= BAUD_DIV_DEFAULT;
             baud_pending <= 1'b0;
             wd_ms        <= 16'd0;
+            ft_phase     <= FT_PHASE_DEFAULT;
+            ph_prev      <= FT_PHASE_DEFAULT;
+            ph_pending   <= 1'b0;
+            ph_ms        <= 16'd0;
             ib_ms        <= 8'd0;
             tmo_ms       <= 16'd0;
         end else begin
@@ -330,6 +349,19 @@ module engine #(
                     baud_pending <= 1'b0;
                     flags[3]     <= 1'b1;
                     st           <= S_FETCH;     // drop any half-received op
+                end
+            end
+
+            // FT232H clock phase confirmation watchdog: a phase that breaks the sync
+            // link is undone after PH_WD_MS without an INFO from the host.
+            if (ph_pending) begin
+                if (tick_ms)
+                    ph_ms <= ph_ms + 1'b1;
+                if (ph_ms >= PH_WD_MS) begin
+                    ft_phase   <= ph_prev;
+                    ph_pending <= 1'b0;
+                    flags[4]   <= 1'b1;
+                    st         <= S_FETCH;
                 end
             end
 
@@ -346,6 +378,7 @@ module engine #(
                 nand_ce_act <= 1'b0;
                 spi_cs_act  <= 1'b0;
                 spi_qin     <= 1'b0;
+                spi_qout    <= 2'd0;
                 nb_req      <= 1'b0;
                 sp_req      <= 1'b0;
                 cs_gap      <= CS_MIN_HIGH;
@@ -401,7 +434,8 @@ module engine #(
                     rleft   <= arg_u16_0;
                     idx     <= 4'd0;
                     tmo_ms  <= 16'd0;
-                    sp_quad <= 1'b0;
+                    sp_width <= 2'd0;
+                    spi_qout <= 2'd0;              // a wide write drives only during its own op
                     sp_tx   <= 8'hFF;
                     case (op)
                         OP_NOP: st <= S_DONE;
@@ -423,6 +457,12 @@ module engine #(
                                 8'd7: t_wb     <= args[1];
                                 8'd8: spi_div  <= args[1];
                                 8'd9: pin_ctrl <= args[1];
+                                8'd10: begin
+                                    ph_prev    <= ph_pending ? ph_prev : ft_phase;
+                                    ft_phase   <= args[1][3:0];
+                                    ph_pending <= 1'b1;
+                                    ph_ms      <= 16'd0;
+                                end
                                 default: flags[0] <= 1'b1;
                             endcase
                             st <= S_DONE;
@@ -442,7 +482,7 @@ module engine #(
                         OP_PIN_TEST: begin
                             test_sel  <= args[0][4:0];
                             test_mode <= (args[1] > 8'd4) ? 3'd0 : args[1][2:0];
-                            len       <= 16'd270;          // settle 10 us before sampling
+                            len       <= PT_SETTLE;        // settle 10 us before sampling
                             st        <= S_PT;
                         end
                         OP_NAND_CE: begin
@@ -480,6 +520,7 @@ module engine #(
                             end else begin
                                 spi_cs_act <= 1'b0;
                                 spi_qin    <= 1'b0;
+                                spi_qout   <= 2'd0;
                                 cs_gap     <= CS_MIN_HIGH;
                                 st         <= S_DONE;
                             end
@@ -487,9 +528,21 @@ module engine #(
                         OP_SPI_WRITE: st <= S_SW;
                         OP_SPI_READ:  st <= S_SR;
                         OP_SPI_READ4: begin
-                            sp_quad <= 1'b1;
-                            spi_qin <= 1'b1;
-                            st      <= S_SR;
+                            sp_width <= 2'd2;
+                            spi_qin  <= 1'b1;
+                            st       <= S_SR;
+                        end
+                        // SPI_WIDE len:u16, flags: bits 1:0 width (0 x1, 1 x2, 2/3 x4), bit 2 read.
+                        // Reads release IO0..IO3 until the next SPI_CS 0 (like SPI_READ4).
+                        OP_SPI_WIDE: begin
+                            sp_width <= args[2][1] ? 2'd2 : {1'b0, args[2][0]};
+                            if (args[2][2]) begin
+                                spi_qin <= (args[2][1:0] != 2'd0);
+                                st      <= S_SR;
+                            end else begin
+                                spi_qout <= args[2][1] ? 2'd2 : {1'b0, args[2][0]};
+                                st       <= S_SW;
+                            end
                         end
                         OP_SPI_XFER:  st <= S_SX;
                         OP_SPI_POLL:  st <= S_SP_CS;
@@ -502,6 +555,8 @@ module engine #(
                         baud_pending <= 1'b0;
                         wd_ms        <= 16'd0;
                     end
+                    if (ph_pending && op == OP_INFO)
+                        ph_pending <= 1'b0;
                     st <= S_FETCH;
                 end
 
@@ -705,7 +760,7 @@ module engine #(
                     if (len == 0 && !sp_req && !sp_busy)
                         st <= S_DONE;
                 end
-                // SPI_READ / SPI_READ4 (sp_quad selects the bus width).
+                // SPI_READ / SPI_READ4 / SPI_WIDE read (sp_width selects the bus width).
                 S_SR: begin
                     if (sp_rvalid) begin
                         tx_data <= sp_rx;

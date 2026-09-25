@@ -13,6 +13,10 @@ module nand_model #(
     parameter COLC      = 2,
     parameter [39:0] ID = 40'h04_95_80_F1_2C,   // byte 0 in bits 7:0
     parameter BAD_BLOCK = 3,
+    parameter ONFI_BLOCKS = BLOCKS,              // blocks reported by ONFI (memory holds BLOCKS)
+    parameter [8*12-1:0] MFR   = "NSPROG",       // ONFI manufacturer / model strings
+    parameter [8*20-1:0] MODEL = "RTL-NAND",
+    parameter ECC_BITS  = 1,                     // ONFI "bits of ECC correctability"
     parameter real T_R    = 3000.0,
     parameter real T_PROG = 6000.0,
     parameter real T_BERS = 9000.0,
@@ -71,18 +75,21 @@ module nand_model #(
         param[0] = "O"; param[1] = "N"; param[2] = "F"; param[3] = "I";
         param[4] = 8'h02;
         for (i = 32; i < 64; i = i + 1) param[i] = " ";
-        param[32] = "N"; param[33] = "S"; param[34] = "P"; param[35] = "R"; param[36] = "O"; param[37] = "G";
-        param[44] = "R"; param[45] = "T"; param[46] = "L"; param[47] = "-"; param[48] = "N";
-        param[49] = "A"; param[50] = "N"; param[51] = "D";
+        j = 32;
+        for (i = 11; i >= 0; i = i - 1)
+            if (MFR[8*i +: 8] != 0) begin param[j] = MFR[8*i +: 8]; j = j + 1; end
+        j = 44;
+        for (i = 19; i >= 0; i = i - 1)
+            if (MODEL[8*i +: 8] != 0) begin param[j] = MODEL[8*i +: 8]; j = j + 1; end
         param[64] = ID[7:0];
         {param[83], param[82], param[81], param[80]} = PAGE;
         {param[85], param[84]} = SPARE;
         {param[95], param[94], param[93], param[92]} = PPB;
-        {param[99], param[98], param[97], param[96]} = BLOCKS;
+        {param[99], param[98], param[97], param[96]} = ONFI_BLOCKS;
         param[100] = 1;
         param[101] = (COLC << 4) | ROWC;
         param[102] = 1;
-        param[112] = 1;
+        param[112] = ECC_BITS;
         param[129] = 1;
         crc = 16'h4F4E;
         for (i = 0; i < 254; i = i + 1)

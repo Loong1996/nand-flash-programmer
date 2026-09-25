@@ -117,7 +117,7 @@ SOIC16 座和 8 脚座可以同时接在同一组 FPGA 脚上（同一时间只�
 接线按 **245 同步 FIFO** 的要求一次接全，两种模式都能用：
 
 - `--port ft232h`：异步 FIFO，约 2 MB/s，最稳；
-- `--port ft232h-sync`：同步 FIFO，FT232H 输出 60 MHz CLKOUT，固件自动切换到同步桥，仿真中 NAND 读约 13 MB/s（实物未验证，出问题就改回异步）。
+- `--port ft232h-sync`：同步 FIFO，FT232H 输出 60 MHz CLKOUT，固件自动切换到同步桥，仿真中 NAND 读约 13–17 MB/s（实物未验证）。第一次用先跑 `nsprog -p ft232h-sync ft232h-tune` 调时钟相位（固件 1.3），可用窗口太窄或仍出错就改回异步。
 
 异步模式下 CLKOUT 没有信号，FPGA 不驱动 OE#（悬空由上拉保持高电平）。
 

@@ -294,10 +294,20 @@ def test_nand_timing_profiles():
     drv = detect(dev, want="nand").nand
     assert drv.auto_timing() == "safe"            # emulator ONFI page: mode 0 only
     assert drv.set_timing("fast") == "fast"
-    regs = dev.link.engine.regs
-    assert regs[P.REG_T_RP] == 1 and regs[P.REG_T_REH] == 1 and regs[P.REG_T_WHR] == 3
+    regs = dev.link.engine.regs                   # 54 MHz: 18.5 ns clocks
+    assert regs[P.REG_T_RP] == 2 and regs[P.REG_T_REH] == 2 and regs[P.REG_T_WHR] == 6
+    assert drv.set_timing("turbo") == "turbo"
+    assert (regs[P.REG_T_WP], regs[P.REG_T_RP], regs[P.REG_T_REH]) == (1, 2, 1)
     image = raw_image(drv, 1, seed=3)
     assert jobs.write(drv, image, start=0).ok
+    # the same profiles on 27 MHz gateware (before 1.3)
+    dev.info.clk_hz = 27_000_000
+    assert drv.timing_clocks("safe") == (2, 3, 2, 3, 2, 6, 8, 6)
+    assert drv.timing_clocks("fast") == drv.timing_clocks("turbo") == (1, 1, 1, 1, 1, 3, 3, 4)
+    drv.onfi.timing_modes = 0x3F
+    assert drv.auto_timing() == "fast"
+    dev.info.clk_hz = 54_000_000
+    assert drv.auto_timing() == "turbo"
     with pytest.raises(ValueError):
         drv.set_timing("warp")
 

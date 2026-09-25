@@ -1,7 +1,7 @@
 # 打包
 
 ```bash
-pip install ./host pyinstaller pillow
+pip install "./host[fs]" pyinstaller pillow
 python host/packaging/build_app.py              # 单文件程序 dist/nsprog-<系统>-<架构>[.exe]
 python host/packaging/build_app.py --app        # macOS：dist/nsprog.app + dist/nsprog-<版本>-macos-<架构>.dmg
 python host/packaging/build_app.py --installer  # Windows：dist/nsprog-<版本>-windows-setup.exe（需要 Inno Setup 6 的 iscc）

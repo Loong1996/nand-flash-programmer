@@ -8,6 +8,7 @@ History and settings are kept in ``~/.nsprog`` (or ``$NSPROG_HOME``).
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -18,11 +19,12 @@ import time
 import traceback
 import zipfile
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from .. import __version__, chipdb, jobs
+from .. import __version__, chipdb, config, jobs
 from ..device import Device, connect
 from ..flash import FlashDriver, ParallelNand, SpiNor, detect, set_spi_clock
 from ..link import find_ft232h_url, list_serial_ports
@@ -35,26 +37,26 @@ DEFAULT_SETTINGS = {"theme": "auto", "spi_mhz": 6.75, "fast_uart": True, "use_rb
                     "nand_timing": "safe", "spi_quad": "auto"}
 
 
-def home_dir() -> str:
-    d = os.environ.get("NSPROG_HOME") or os.path.join(os.path.expanduser("~"), ".nsprog")
-    os.makedirs(d, exist_ok=True)
-    return d
+home_dir = config.home_dir
+_load_json = config.load_json
+_save_json = config.save_json
 
 
-def _load_json(name, default):
-    try:
-        with open(os.path.join(home_dir(), name), encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return default
-
-
-def _save_json(name, data):
-    path = os.path.join(home_dir(), name)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+def _zip_tree(root: str, zpath: str) -> None:
+    """Zip a directory tree, keeping symlinks as links."""
+    with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
+        for dirpath, dirs, files in os.walk(root):
+            for name in dirs + files:
+                full = os.path.join(dirpath, name)
+                rel = os.path.relpath(full, root)
+                if os.path.islink(full):
+                    info = zipfile.ZipInfo(rel)
+                    info.external_attr = 0o120777 << 16
+                    z.writestr(info, os.readlink(full))
+                elif os.path.isdir(full):
+                    z.write(full, rel + "/")
+                else:
+                    z.write(full, rel)
 
 
 class ToolReport(jobs.Report):
@@ -86,6 +88,7 @@ class State:
         self.badmap: dict = {}          # target -> {"blocks": n, "bad": [...], "new": [...], "time": t}
         self.pins: Optional[dict] = None
         self.pintest = 0                # PIN_TEST mode currently set on the FPGA
+        self.fsview: list = []          # file systems of the last "browse" tool run (for downloads)
         self.version = 0
         self.settings = dict(DEFAULT_SETTINGS, **_load_json("settings.json", {}))
         self.history = _load_json("history.json", [])
@@ -320,6 +323,52 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 checks = doctor.run(dev, drive=bool(body.get("drive", True)))
                 st.bump()
                 return {"checks": [c.as_dict() for c in checks], "summary": doctor.summary(checks)}
+        return await _in_thread(work)
+
+    @app.get("/api/troubleshoot")
+    def api_troubleshoot_list():
+        from .. import troubleshoot as T
+        return {"symptoms": [x.as_dict() for x in T.SYMPTOMS]}
+
+    @app.post("/api/troubleshoot")
+    async def api_troubleshoot(req: Request):
+        from .. import troubleshoot as T
+        body = await req.json()
+        try:
+            T.symptom(str(body.get("symptom", "")))
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from None
+        if _busy():
+            raise HTTPException(409, "a job is running")
+
+        def work():
+            with st.lock:
+                st.pintest = 0
+                findings = T.diagnose(body["symptom"], st.dev)
+                st.bump()
+                return T.as_dict(body["symptom"], findings)
+        return await _in_thread(work)
+
+    @app.post("/api/ft232h/tune")
+    async def api_ft232h_tune():
+        from .. import ft232h as F
+        if _busy():
+            raise HTTPException(409, "a job is running")
+
+        def work():
+            with st.lock:
+                dev = _need_dev()
+                try:
+                    if not F.phase_supported(dev):
+                        raise ValueError("固件 %s 不支持调相，需要 1.3" % dev.info.gw_version)
+                    rep = F.tune(dev)
+                except ValueError as e:
+                    raise HTTPException(400, str(e)) from None
+                if rep.best is not None:
+                    F.save_phase(dev.link.name, rep.best)
+                st.bump()
+                return {"results": [{"phase": p, "ok": err is None, "error": err} for p, err in rep.results],
+                        "window": rep.window, "best": rep.best, "summary": rep.summary()}
         return await _in_thread(work)
 
     @app.post("/api/selftest")
@@ -596,9 +645,104 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
         from ..ecc import layout
 
         geo = image.Geometry(page, oob, ppb)
+        other = None
+        if tool == "diff":
+            split = _q(req, "split", None, int)
+            if split is None or not 0 < split < len(data):
+                raise HTTPException(400, "diff needs two files (image A followed by image B, split=len(A))")
+            other = _tmp()
+            with open(src, "wb") as f:
+                f.write(data[:split])
+            with open(other, "wb") as f:
+                f.write(data[split:])
+
+        def main_bytes() -> bytes:
+            if oob > 0:
+                buf = io.BytesIO()
+                with open(src, "rb") as f:
+                    image.strip_oob(f, buf, geo)
+                return buf.getvalue()
+            with open(src, "rb") as f:
+                return f.read()
+
+        def _tool_diff() -> ToolReport:
+            from ..diff import diff_files
+
+            assert other is not None
+            drep = diff_files(src, other, geo)
+            kind_zh = {"bitflip": "位翻转", "erased": "一侧为空", "changed": "内容不同"}
+            tables = [] if drep.identical else [
+                {"title": "有差异的块", "cols": ["块", "位翻转页", "一侧为空", "内容不同"],
+                 "rows": [[b["block"], b["bitflip"], b["erased"], b["changed"]]
+                          for b in drep.block_rows()[:500]]},
+                {"title": "有差异的页（前 500）",
+                 "cols": ["页", "块", "类型", "主数据字节", "OOB 字节", "1→0 位", "0→1 位"],
+                 "rows": [[d.page, d.page // ppb, kind_zh[d.kind], d.main_bytes, d.oob_bytes, d.bits_10,
+                           d.bits_01] for d in drep.diffs[:500]]}]
+            return ToolReport("image diff", drep.identical, drep.summary(), tables=tables, kinds=drep.kinds)
+
+        def _tool_scan() -> ToolReport:
+            from ..scan import scan
+
+            srep = scan(main_bytes())
+            tables = [dict(srep.table(), title="发现")]
+            if srep.partitions:
+                tables.append(dict(srep.partition_table(), title="分区表"))
+            if srep.env:
+                tables.append({"title": "U-Boot 环境变量", "cols": ["变量", "值"],
+                               "rows": [[k, v] for k, v in srep.env.items()]})
+            return ToolReport("scan", True, srep.summary(), tables=tables)
+
+        def _tool_fs(browse: bool) -> ToolReport:
+            from .. import fs as fsmod
+
+            found = fsmod.find_all(main_bytes())
+            if not found:
+                return ToolReport("file systems", False, "no SquashFS / JFFS2 / UBIFS / UBI found" +
+                                  (" (is the OOB size right?)" if oob else " (raw image? set the OOB size)"))
+            lines = []
+            for fnd in found:
+                lines.append("%s: %s" % (fnd.label, fnd.error or ", ".join(
+                    "%s=%s" % kv for kv in (fnd.fs.info().items() if fnd.fs else []))))
+            if browse:
+                st.fsview = found
+                rows: list = []
+                for i, fnd in enumerate(found):
+                    if fnd.fs is None:
+                        continue
+                    for e in fnd.fs.listing(20000):
+                        cell: dict = {"text": e.path + (" → " + e.target if e.target else "")}
+                        if e.kind == "file":
+                            cell["href"] = "/api/fs/file?i=%d&path=%s" % (i, quote(e.path))
+                        short = "%s @0x%X" % (fnd.fs.kind, fnd.offset)
+                        rows.append([cell, e.size if e.kind == "file" else "", e.mode_str, short])
+                return ToolReport("file systems", True, "\n".join(lines), tables=[
+                    {"title": "文件（点文件名下载）", "cols": ["路径", "大小", "权限", "文件系统"],
+                     "rows": rows, "wrap": 0}])
+            tmpdir = tempfile.mkdtemp(prefix="nsprog-fs-")
+            try:
+                for fnd in found:
+                    if fnd.fs is None:
+                        continue
+                    c = fnd.fs.extract(os.path.join(tmpdir, fnd.label))
+                    lines.append("  %s: %d files, %d dirs, %d symlinks%s" % (
+                        fnd.label, c["files"], c["dirs"], c["symlinks"],
+                        ", %d errors" % c["errors"] if c["errors"] else ""))
+                zpath = _tmp(".zip")
+                _zip_tree(tmpdir, zpath)
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            set_result(zpath, base + "-files.zip")
+            return ToolReport("file systems", True, "\n".join(lines))
 
         def fn(ctx):
             try:
+                if tool == "diff":
+                    return _tool_diff()
+                if tool == "scan":
+                    return _tool_scan()
+                if tool in ("fs_list", "fs_extract"):
+                    return _tool_fs(tool == "fs_list")
                 if tool == "info":
                     with open(src, "rb") as f:
                         inf = image.info(f, geo, raw=oob > 0)
@@ -652,6 +796,8 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 raise ValueError("unknown tool %r" % tool)
             finally:
                 os.unlink(src)
+                if other:
+                    os.unlink(other)
 
         def set_result(path, name):
             st.result_path = path
@@ -663,6 +809,19 @@ def create_app(default_port: Optional[str] = None) -> FastAPI:
                 st.job["download"] = "/api/result"
 
         return _start("tool:" + tool, "file", fn, chip_name=fname)
+
+    @app.get("/api/fs/file")
+    def fs_file(i: int, path: str):
+        if not 0 <= i < len(st.fsview) or st.fsview[i].fs is None:
+            raise HTTPException(404, "browse the image again (tools: 浏览文件系统)")
+        for e in st.fsview[i].fs.entries():
+            if e.path == path and e.kind == "file" and e.read:
+                data = e.read()
+                name = os.path.basename(path) or "file"
+                disp = "attachment; filename*=UTF-8''%s" % quote(name)
+                return Response(data, media_type="application/octet-stream",
+                                headers={"Content-Disposition": disp})
+        raise HTTPException(404, "no such file")
 
     @app.post("/api/quit")
     def api_quit():

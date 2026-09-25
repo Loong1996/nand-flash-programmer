@@ -14,13 +14,15 @@ from cocotb.utils import get_sim_time
 
 from cocotb._bridge import resume
 from simhost import (FtModel, FtSyncModel, SimDevice, SimFtLink, SimUartLink, UartModel,
-                     bridge, start)
+                     bridge, start, wait_quiet)
 
 from nsprog import jobs  # noqa: E402  (path set up by simhost)
 from nsprog import protocol as P  # noqa: E402
 from nsprog.flash import SpiNand, SpiNor, detect, set_spi_clock  # noqa: E402
 
 SPI_NAND = os.environ.get("NSPROG_SIM_SPI") == "nand"
+W29N02KV = os.environ.get("NSPROG_SIM_NAND") == "w29n02kv"
+STRESS = os.environ.get("NSPROG_SIM_STRESS") == "1"
 
 
 def rnd(n, seed):
@@ -66,7 +68,7 @@ async def ft_info_echo(dut):
 
     def host():
         info = dev.open(negotiate=False)
-        assert info.proto == 1 and info.rx_fifo == 4096 and info.clk_hz == 27_000_000
+        assert info.proto == 1 and info.rx_fifo == 4096 and info.clk_hz == 54_000_000
         assert info.port == 1
         b = P.Batch()
         rs = [b.echo(i) for i in range(64)]
@@ -171,6 +173,43 @@ async def uart_baud_and_nand_id(dut):
     check_models(dut)
 
 
+@cocotb.test(skip=SPI_NAND or W29N02KV)
+async def ft_sync_phase_tune(dut):
+    """Sync FIFO clock phase sweep (register 10): phases that break the link are undone
+    by the engine watchdog, the host settles on the middle of the working window."""
+    from nsprog import ft232h as F
+
+    await start(dut)
+    ft, dev = ft_sync_device(dut, stall_every=2000, stall_cycles=100, rx_gap_every=500)
+    await Timer(40, "us")
+    F.REVERT_S = 3.5                        # tb sets PH_WD_MS = 3
+
+    def sweep():
+        dev.open(negotiate=False)
+        ft.log_errors = False               # the FT model complains at the bad phases
+        try:
+            return F.tune(dev, rounds=2, progress=lambda ph, err: dut._log.info(
+                "phase %2d: %s", ph, "OK" if err is None else err))
+        finally:
+            ft.log_errors = True
+    rep = await bridge(sweep)()
+    for line in rep.summary().splitlines():
+        dut._log.info(line)
+    assert 0 in rep.passing, "power-up phase must work"
+    assert len(rep.passing) < 16, "the FT232H model should reject some phases"
+    assert rep.best in rep.window and int(dut.dut.u_eng.ft_phase.value) == rep.best
+    errors, contention = ft.errors, int(dut.ft_contention.value)
+
+    def transfer():
+        b = P.Batch()
+        rs = [b.echo(i & 0xFF) for i in range(3000)]
+        dev.run(b)
+        assert [r.value for r in rs] == [i & 0xFF for i in range(3000)]
+        assert dev.query_info().flags & ~P.FLAG_PHASE_REVERT == 0
+    await bridge(transfer)()
+    assert ft.errors == errors and int(dut.ft_contention.value) == contention
+
+
 @cocotb.test(skip=SPI_NAND)
 async def ft_sync_fifo_nand_fast(dut):
     """245 sync FIFO link (60 MHz CLKOUT), fastest NAND timings, TX stalls."""
@@ -207,7 +246,20 @@ async def ft_sync_fifo_nand_fast(dut):
         dev.run(b)
         dt = get_sim_time("ns") - t0
         assert len(r.value) == 60000
-        dut._log.info("sync FIFO NAND_READ burst: %.2f MB/s", 60000 / dt * 1e3)
+        dut._log.info("sync FIFO NAND_READ burst (fast): %.2f MB/s", 60000 / dt * 1e3)
+        drv.set_timing("turbo")                 # 54 MHz: RE# 37 ns low / 18.5 ns high
+        out = io.BytesIO()
+        jobs.read(drv, out, start=4, count=2)
+        assert out.getvalue() == image
+        b = P.Batch()
+        b.nand_ce(True)
+        r = b.nand_read(60000)
+        b.nand_ce(False)
+        t0 = get_sim_time("ns")
+        dev.run(b)
+        dt = get_sim_time("ns") - t0
+        assert len(r.value) == 60000
+        dut._log.info("sync FIFO NAND_READ burst (turbo): %.2f MB/s", 60000 / dt * 1e3)
     await bridge(host)()
     check_ft(dut, ft)
     check_models(dut)
@@ -215,27 +267,33 @@ async def ft_sync_fifo_nand_fast(dut):
 
 @cocotb.test(skip=SPI_NAND)
 async def ft_spi_nor_quad(dut):
-    """1-1-4 fast read (6Bh) through SPI_READ4, at the fastest SPI clock."""
+    """Every SPI NOR read bus (1-1-1, 1-1-2 3Bh, 1-2-2 BBh, 1-1-4 6Bh, 1-4-4 EBh) and 32h quad page
+    program through SPI_WIDE, at the fastest SPI clock (27 MHz)."""
     await start(dut)
     ft, dev = ft_device(dut)
 
     def host():
         dev.open(negotiate=False)
+        assert dev.info.caps & P.CAP_SPI_WIDE and dev.info.gw_version == "1.3"
         drv = detect(dev, want="spi").spi
         assert drv.chip.quad_cmd == 0x6B and drv.chip.qer == 5, drv.chip
-        set_spi_clock(dev, 13.5)
+        assert set(drv.chip.read_modes) == {"dual", "dual-io", "quad", "quad-io"}, drv.chip.read_modes
+        assert set_spi_clock(dev, 30) == 27.0          # 54 MHz / 2
         image = rnd(5000, seed=8)
+        drv.quad_write = True                   # 32h, data on IO0..IO3
         assert jobs.write(drv, image, start=2).ok
-        drv.quad = "auto"                       # QE is already set in the model
+        drv.quad_write = False
+        drv.io = "auto"                         # QE is set in the model: 1-4-4 wins
         assert drv.read(2 * 4096 + 3, 4000) == image[3:4003]
-        assert drv.quad_active
-        for quad in ("off", "auto"):
-            drv.quad = quad
+        assert drv.last_bus == "quad-io" and drv.quad_active
+        for mode in ("single", "dual", "dual-io", "quad", "quad-io"):
+            drv.io = mode
             t0 = get_sim_time("ns")
-            assert drv.read(2 * 4096, 5000) == image
+            assert drv.read(2 * 4096, 5000) == image, mode
             dt = get_sim_time("ns") - t0
-            dut._log.info("SPI NOR read at 13.5 MHz, quad=%s: %.2f MB/s (async FIFO link)",
-                          quad, 5000 / dt * 1e3)
+            dut._log.info("SPI NOR read at 27 MHz, %-7s: %.2f MB/s (async FIFO link)",
+                          mode, 5000 / dt * 1e3)
+        drv.io = "auto"
         out = io.BytesIO()
         jobs.read(drv, out, start=2, count=2)
         assert out.getvalue()[:len(image)] == image
@@ -253,7 +311,7 @@ async def ft_pin_test_doctor(dut):
 
     def host():
         info = dev.open(negotiate=False)
-        assert info.caps & P.CAP_PIN_TEST and info.gw_version == "1.2"
+        assert info.caps & P.CAP_PIN_TEST and info.gw_version >= "1.2"
         b = P.Batch()
         idle = b.pin_test(0, P.PT_RELEASE)
         ce_low = b.pin_test(12, P.PT_LOW)
@@ -314,3 +372,186 @@ async def ft_spi_nand(dut):
         assert jobs.blank_check(drv, start=0, count=4).ok
     await bridge(host)()
     check_models(dut)
+
+
+@cocotb.test(skip=not SPI_NAND)
+async def ft_spi_nand_wide(dut):
+    """SPI NAND quad program load (32h) and every cache read bus (03h, 3Bh, BBh, 6Bh, EBh)."""
+    await start(dut)
+    ft, dev = ft_device(dut)
+
+    def host():
+        dev.open(negotiate=False)
+        drv = detect(dev, want="spi").spi
+        set_spi_clock(dev, 27)
+        drv.blocks = 4
+        img = bytearray(rnd(drv.pages_per_block * drv.raw_page, seed=19))
+        for pg in (0, 1):
+            img[pg * drv.raw_page + drv.page_size] = 0xFF
+        img = bytes(img)
+        drv.quad_write = True
+        assert jobs.write(drv, img, start=3).ok
+        drv.quad_write = False
+        for mode in ("single", "dual", "dual-io", "quad", "quad-io"):
+            drv.io = mode
+            out = io.BytesIO()
+            t0 = get_sim_time("ns")
+            jobs.read(drv, out, start=3, count=1)
+            dt = get_sim_time("ns") - t0
+            assert out.getvalue() == img, mode
+            dut._log.info("SPI NAND block read at 27 MHz, %-7s: %.2f MB/s", mode, len(img) / dt * 1e3)
+    await bridge(host)()
+    check_models(dut)
+
+
+# ----------------------------------------------------------------------------
+@cocotb.test(skip=not W29N02KV)
+async def ft_w29n02kvsiaf(dut):
+    """Winbond W29N02KVSIAF (first test chip): ID, ONFI + database, 2048+128 pages, real tR/tPROG/tBERS."""
+    await start(dut)
+    ft, dev = ft_device(dut)
+
+    def host():
+        dev.open(negotiate=False)
+        det = detect(dev, want="nand")
+        drv = det.nand
+        assert drv is not None, det.messages
+        assert drv.name == "W29N02KVSIAF" and drv.chip.source == "nsprog+onfi", det.messages
+        assert det.nand_id[:5] == bytes.fromhex("EFDA109506")
+        assert (drv.page_size, drv.chip.spare_size, drv.pages_per_block, drv.blocks) == (2048, 128, 64, 2048)
+        assert drv.chip.ecc_bits == 4 and drv.chip.voltage == 3.3
+        assert any("4-bit ECC per 512 B" in m for m in det.messages)
+        assert drv.bad_blocks([0, 3])[3] and not drv.bad_blocks([0])[0]
+        image = raw_image(drv, 1, seed=29)
+        rep = jobs.write(drv, image, start=4, bb="skip")
+        assert rep.ok, rep.summary()
+        out = io.BytesIO()
+        jobs.read(drv, out, start=4, count=1, bb="skip")
+        assert out.getvalue() == image
+        assert jobs.erase(drv, start=4, count=1).ok
+        assert jobs.blank_check(drv, start=4, count=1).ok
+        assert not dev.pin_ctrl & P.PIN_NAND_WP_HIGH
+    await bridge(host)()
+    assert int(dut.u_nand.programs.value) == 64 and int(dut.u_nand.erases.value) >= 1
+    assert ft.errors == 0
+    check_models(dut)
+
+
+# ----------------------------------------------------------------------------
+# Stress / fuzz variant (run_sim.py stress): garbage, truncated operations, link
+# faults and long transfers. Chip-model protocol checks are not asserted here:
+# random operations misuse the chips on purpose; the FPGA-side checks are.
+def _sanity(dev, dut):
+    from nsprog import fuzz
+
+    fuzz.restore(dev)
+    b = P.Batch()
+    rs = [b.echo(v) for v in range(0, 256, 5)]
+    dev.run(b)
+    assert [r.value for r in rs] == list(range(0, 256, 5))
+    det = detect(dev)
+    assert det.nand is not None and det.nand_id[:2] == bytes([0x2C, 0xF1]), det.messages
+    assert det.spi is not None, det.messages
+
+
+@cocotb.test(skip=not STRESS)
+async def stress_ft_fuzz_resync(dut):
+    """Random / malformed / truncated command streams over the FT232H; the host resyncs every time."""
+    from nsprog import fuzz
+
+    await start(dut)
+    ft, dev = ft_device(dut)
+    rng = random.Random(4)
+    flags_seen = 0
+
+    def host_open():
+        dev.open(negotiate=False)
+    await bridge(host_open)()
+    for rnd_i in range(4):
+        blob = fuzz.stream(rng, ops=50, safe=False)
+        ft.rxq.extend(blob)
+        await wait_quiet(ft.txq, ft.rxq)             # host drain: > 100 ms quiet
+
+        def host():
+            nonlocal flags_seen
+            dev.resync()
+            flags_seen |= dev.info.flags
+            _sanity(dev, dut)
+        await bridge(host)()
+        dut._log.info("fuzz round %d: %d bytes of garbage, engine flags %02x", rnd_i, len(blob), flags_seen)
+    assert flags_seen & 1 and flags_seen & 2, "unknown-opcode and timeout-abort flags never set"
+    check_ft(dut, ft)
+
+
+@cocotb.test(skip=not STRESS)
+async def stress_uart_framing(dut):
+    """UART garbage with framing errors and a break, then resync at 115200 and at 3 Mbaud."""
+    await start(dut)
+    uart = UartModel(dut)
+    rng = random.Random(9)
+
+    def host_open():
+        dev = SimDevice(SimUartLink(uart))
+        dev.open(negotiate=False)
+        return dev
+    dev = await bridge(host_open)()
+    for _ in range(2):
+        for _ in range(40):
+            r = rng.random()
+            if r < 0.1:
+                uart.txq.append(("badstop", rng.randrange(256)))
+            elif r < 0.12:
+                uart.txq.append(("break", 300))
+            else:
+                uart.txq.append(rng.choice([rng.randrange(256), P.NAND_WRITE, P.SPI_WRITE]))
+        await wait_quiet(uart.rxq, uart.txq)
+
+        def host():
+            dev.resync()
+            _sanity(dev, dut)
+        await bridge(host)()
+
+    def fast():
+        assert dev.negotiate_baud() == 3_000_000
+        _sanity(dev, dut)
+        dev.close()
+    await bridge(fast)()
+
+
+@cocotb.test(skip=not STRESS)
+async def stress_sync_fifo_long_read(dut):
+    """~0.5 MB of NAND reads over the 245 sync FIFO with TX stalls (FIFO full), RX gaps and one
+    20 ms host stall; every pass must return the written image."""
+    await start(dut)
+    ft, dev = ft_sync_device(dut, stall_every=1500, stall_cycles=2500, rx_gap_every=300)
+    await Timer(40, "us")
+    state = {}
+
+    def host_setup():
+        dev.open(negotiate=False)
+        drv = detect(dev, want="nand").nand
+        drv.set_timing("fast")
+        image = raw_image(drv, 8, seed=77)
+        rep = jobs.write(drv, image, start=0, bb="keep")
+        assert rep.ok or rep.skipped_blocks == [3], rep.summary()
+        out = io.BytesIO()
+        jobs.read(drv, out, start=0, count=8, bb="keep")
+        state.update(drv=drv, ref=out.getvalue())
+    await bridge(host_setup)()
+    total = 0
+    t0 = get_sim_time("ns")
+    for i in range(4):
+        if i == 1:
+            ft.stall_once = 1_200_000                # one 20 ms stall: the host stops reading
+
+        def host_read():
+            out = io.BytesIO()
+            jobs.read(state["drv"], out, start=0, count=8, bb="keep")
+            assert out.getvalue() == state["ref"], "pass %d differs" % i
+            return len(state["ref"])
+        total += await bridge(host_read)()
+    dt = get_sim_time("ns") - t0
+    dut._log.info("sync FIFO stress: %d bytes read in %.1f ms (%.2f MB/s incl. stalls)",
+                  total, dt / 1e6, total / dt * 1e3)
+    assert total >= 500_000
+    check_ft(dut, ft)

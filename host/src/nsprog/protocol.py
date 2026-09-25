@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 # Opcodes
 NOP = 0x00
@@ -33,10 +33,12 @@ SPI_READ = 0x22
 SPI_XFER = 0x23
 SPI_POLL = 0x24
 SPI_READ4 = 0x25          # quad-input read (data phase of 6Bh), gateware >= 1.1
+SPI_WIDE = 0x26           # dual / quad write or read (len:u16, flags), gateware >= 1.3
 
 # INFO capability bits
 CAP_NAND8 = 0x01
 CAP_SPI = 0x02
+CAP_SPI_WIDE = 0x04       # SPI_WIDE
 CAP_FT245 = 0x08
 CAP_UART = 0x10
 CAP_QSPI = 0x20           # SPI_READ4
@@ -61,6 +63,14 @@ REG_T_ADL = 6
 REG_T_WB = 7
 REG_SPI_DIV = 8
 REG_PIN_CTRL = 9
+REG_FT_PHASE = 10         # sync FIFO clock phase, 0..15 x 22.5 degrees (gateware >= 1.3)
+
+# INFO flags
+FLAG_BAD_OP = 0x01        # unknown opcode / register
+FLAG_TIMEOUT = 0x02       # partly received operation dropped
+FLAG_OVERRUN = 0x04       # UART receive overrun
+FLAG_BAUD_REVERT = 0x08   # unconfirmed SET_BAUD undone
+FLAG_PHASE_REVERT = 0x10  # unconfirmed REG_FT_PHASE undone
 
 PIN_NAND_WP_HIGH = 1 << 0
 PIN_SPI_IO2_HIGH = 1 << 1
@@ -69,6 +79,20 @@ PIN_NAND_PARK = 1 << 3
 PIN_SPI_PARK = 1 << 4
 PIN_SPI_SAMPLE_LATE = 1 << 5
 PIN_CTRL_DEFAULT = PIN_SPI_IO2_HIGH | PIN_SPI_IO3_HIGH
+#: register values after reset at 27 MHz (gateware < 1.3; docs/protocol.md section 3)
+REG_DEFAULTS = {REG_T_SETUP: 2, REG_T_WP: 3, REG_T_WH: 2, REG_T_RP: 3, REG_T_REH: 2, REG_T_WHR: 6,
+                REG_T_ADL: 8, REG_T_WB: 6, REG_SPI_DIV: 3, REG_PIN_CTRL: PIN_CTRL_DEFAULT}
+
+
+def reg_defaults(clk_hz: int = 27_000_000) -> Dict[int, int]:
+    """Register values after reset for an engine clock of ``clk_hz`` (cycle counts
+    scale with the clock so the times stay the same)."""
+    cm = max(1, (clk_hz + 13_500_000) // 27_000_000)
+    regs = {r: v * cm for r, v in REG_DEFAULTS.items() if r <= REG_T_WB}
+    regs[REG_SPI_DIV] = 4 * cm - 1
+    regs[REG_PIN_CTRL] = PIN_CTRL_DEFAULT
+    return regs
+
 
 INFO_MAGIC = b"NSPG"
 INFO_LEN = 16
@@ -275,6 +299,20 @@ class Batch:
         released until the following ``spi_cs(False)``."""
         return self._read_op(SPI_READ4, n)
 
+    #: SPI_WIDE flags: bus width code; bit 2 = read
+    WIDE = {1: 0, 2: 1, 4: 2}
+
+    def spi_wide_write(self, data: bytes, width: int) -> None:
+        """Send ``data`` on 1, 2 (IO1..IO0) or 4 (IO3..IO0) lines."""
+        data = bytes(data)
+        for i in range(0, len(data), MAX_CHUNK):
+            part = data[i:i + MAX_CHUNK]
+            self._op(bytes([SPI_WIDE]) + _u16(len(part)) + bytes([self.WIDE[width]]) + part)
+
+    def spi_wide_read(self, n: int, width: int) -> Result:
+        """Read ``n`` bytes on 1, 2 or 4 lines; the lines stay released until ``spi_cs(False)``."""
+        return self._read_op(SPI_WIDE, n, bytes([self.WIDE[width] | 4]))
+
     def spi_xfer(self, data: bytes) -> Result:
         data = bytes(data)
         res = Result()
@@ -292,7 +330,7 @@ class Batch:
                         2, _poll_decode, wait_ms=timeout_ms)
 
     # ---------------------------------------------------------------- internal
-    def _read_op(self, opcode: int, n: int) -> Result:
+    def _read_op(self, opcode: int, n: int, suffix: bytes = b"") -> Result:
         res = Result()
         if n == 0:
             res._finish()
@@ -301,5 +339,5 @@ class Batch:
         while remaining > 0:
             step = min(remaining, MAX_READ)
             remaining -= step
-            self.ops.append(Op(bytes([opcode]) + _u16(step), step, res, remaining == 0))
+            self.ops.append(Op(bytes([opcode]) + _u16(step) + suffix, step, res, remaining == 0))
         return res

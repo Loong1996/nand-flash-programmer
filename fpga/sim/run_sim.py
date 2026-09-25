@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Build and run the RTL simulation (Icarus Verilog + cocotb).
 
-    python fpga/sim/run_sim.py                 # SPI NOR and SPI NAND variants, all tests
+    python fpga/sim/run_sim.py                 # nor, nand and w29n02kv variants, all tests
     python fpga/sim/run_sim.py nor             # SPI NOR model on the SPI bus
     python fpga/sim/run_sim.py nand            # SPI NAND model on the SPI bus
+    python fpga/sim/run_sim.py w29n02kv        # parallel NAND model set up as Winbond W29N02KVSIAF
+    python fpga/sim/run_sim.py stress          # fuzzing, UART framing errors, ~2 MB sync-FIFO reads
     python fpga/sim/run_sim.py nor ft_spi_nor  # selected test(s)
     python fpga/sim/run_sim.py gate            # gate-level: the yosys netlist instead of the RTL
     python fpga/sim/run_sim.py gate ft_spi_nor # (default gate tests: GATE_TESTS below)
@@ -24,11 +26,14 @@ from cocotb_tools.runner import get_runner
 HERE = Path(__file__).resolve().parent
 FPGA = HERE.parent
 RTL = FPGA / "rtl"
-VARIANTS = ("nor", "nand", "gate")
+VARIANTS = ("nor", "nand", "gate", "w29n02kv", "stress")
 
 #: gate-level simulation is ~10x slower; these cover every block of the design
 GATE_TESTS = ["ft_info_echo", "ft_pin_test_doctor", "ft_spi_nor_quad",
               "ft_parallel_nand_no_rb", "ft_sync_fifo_nand_fast", "uart_baud_and_nand_id"]
+#: tests of the chip-specific variants (the default tests assume the generic model's geometry)
+CHIP_TESTS = {"w29n02kv": ["ft_w29n02kvsiaf"]}
+STRESS_TESTS = ["stress_ft_fuzz_resync", "stress_uart_framing", "stress_sync_fifo_long_read"]
 
 
 def yosys_share() -> Path:
@@ -67,6 +72,9 @@ def cell_library() -> Path:
     bad = "  assign IO = OEN ? 1'bz : I;\n  assign I = IO;"
     if bad in src:
         src = src.replace(bad, "  assign IO = OEN ? 1'bz : I;\n  assign O = IO;")
+    # rPLL is an empty stub there; gowin_pll_sim.v provides a behavioural model
+    import re
+    src = re.sub(r"(\(\* blackbox \*\)\s*)?module rPLL \(.*?endmodule", "", src, flags=re.S)
     dst = FPGA / "build" / "gate" / "cells_sim_fixed.v"
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(src)
@@ -76,16 +84,23 @@ def cell_library() -> Path:
 def run(variant: str, tests=None) -> None:
     models = sorted((HERE / "models").glob("*.v"))
     if variant == "gate":
-        sources = [netlist(), cell_library(), HERE / "gowin_bram_sim.v"]
+        sources = [netlist(), cell_library(), HERE / "gowin_bram_sim.v", HERE / "gowin_pll_sim.v"]
         defines = {"GATE_SIM": 1}
         tests = tests or GATE_TESTS
     else:
-        sources = sorted(RTL.glob("*.v"))
+        sources = sorted(RTL.glob("*.v")) + [HERE / "gowin_pll_sim.v"]
         defines = {"SPI_NAND": 1} if variant == "nand" else {}
+        if variant in CHIP_TESTS:
+            defines = {variant.upper(): 1}
+            tests = tests or CHIP_TESTS[variant]
+        if variant == "stress":
+            tests = tests or STRESS_TESTS
     sources += models + [HERE / "tb.v"]
     build_dir = HERE / "sim_build" / variant
     env = {"NSPROG_SIM_SPI": "nand" if variant == "nand" else "nor", "PYTHONPATH": str(HERE),
-           "NSPROG_SIM_GATE": "1" if variant == "gate" else ""}
+           "NSPROG_SIM_GATE": "1" if variant == "gate" else "",
+           "NSPROG_SIM_NAND": variant if variant in CHIP_TESTS else "",
+           "NSPROG_SIM_STRESS": "1" if variant == "stress" else ""}
     if tests:
         env["COCOTB_TEST_FILTER"] = "|".join(r"\.%s$" % t for t in tests)
     runner = get_runner("icarus")
@@ -99,7 +114,7 @@ def run(variant: str, tests=None) -> None:
 
 
 if __name__ == "__main__":
-    variants = [a for a in sys.argv[1:] if a in VARIANTS] or ["nor", "nand"]
+    variants = [a for a in sys.argv[1:] if a in VARIANTS] or ["nor", "nand", "w29n02kv"]
     tests = [a for a in sys.argv[1:] if a not in VARIANTS] or None
     for v in variants:
         run(v, tests)

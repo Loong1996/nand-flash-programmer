@@ -10,8 +10,17 @@
 // that clock domain, driving OE# itself. Without CLKOUT, OE# is left floating.
 
 module top #(
-    parameter CLK_HZ = 27_000_000,
-    parameter BAUD   = 115_200
+    // Main clock: the 27 MHz crystal times PLL_MUL / PLL_DIV (rPLL). PLL_MUL = PLL_DIV = 1
+    // bypasses the PLL. CLK_HZ must match.
+    parameter PLL_MUL = 2,
+    parameter PLL_DIV = 1,
+    parameter CLK_HZ  = 27_000_000 * PLL_MUL / PLL_DIV,
+    parameter BAUD    = 115_200,
+    // FT232H CLKOUT goes through a second rPLL whose output phase is set at run time
+    // (register 10, 16 steps of 22.5 degrees); FT_PLL = 0 uses CLKOUT directly.
+    parameter FT_PLL           = 1,
+    parameter FT_PHASE_DEFAULT = 0,
+    parameter PH_WD_MS         = 1000
 ) (
     input  wire       clk27,
     input  wire [1:0] btn_n,
@@ -49,14 +58,34 @@ module top #(
 );
     localparam [15:0] BAUD_DIV = (CLK_HZ + BAUD / 2) / BAUD;
 
-    wire clk = clk27;
+    // ------------------------------------------------------------ clock
+    wire clk;
+    wire pll_lock;
+    generate
+        if (PLL_MUL == PLL_DIV) begin : g_nopll
+            assign clk      = clk27;
+            assign pll_lock = 1'b1;
+        end else begin : g_pll
+            // CLKOUT = 27 MHz * (FBDIV_SEL + 1) / (IDIV_SEL + 1); VCO = CLKOUT * ODIV_SEL (400-1200 MHz)
+            rPLL #(
+                .FCLKIN("27"), .IDIV_SEL(PLL_DIV - 1), .FBDIV_SEL(PLL_MUL - 1),
+                .ODIV_SEL(27 * PLL_MUL / PLL_DIV >= 50 ? 16 : 32), .DEVICE("GW1NR-9C")
+            ) u_pll (
+                .CLKIN(clk27), .CLKFB(1'b0), .RESET(1'b0), .RESET_P(1'b0),
+                .FBDSEL(6'd0), .IDSEL(6'd0), .ODSEL(6'd0), .PSDA(4'd0), .DUTYDA(4'd0), .FDLY(4'd0),
+                .CLKOUT(clk), .LOCK(pll_lock), .CLKOUTP(), .CLKOUTD(), .CLKOUTD3()
+            );
+        end
+    endgenerate
 
     // ------------------------------------------------------------ reset
     reg  [7:0] por = 8'd0;
     wire [1:0] btn_s;
     sync2 #(.W(2)) u_btn (.clk(clk), .d(btn_n), .q(btn_s));
     always @(posedge clk)
-        if (!por[7])
+        if (!pll_lock)
+            por <= 8'd0;
+        else if (!por[7])
             por <= por + 1'b1;
     wire rst = !por[7] || !btn_s[0];
 
@@ -72,10 +101,31 @@ module top #(
     // (FT232H in sync FIFO mode); this selects the sync bridge.
     // (A toggle flop in the CLKOUT domain is watched instead of CLKOUT itself, so
     // the CLKOUT net only feeds clock pins and can use global clock routing.)
-    wire fclk = ft_clkout;
+    wire fclk_raw = ft_clkout;
     reg  ftog = 1'b0;
-    always @(posedge fclk)
+    always @(posedge fclk_raw)
         ftog <= ~ftog;
+
+    // Clock of the sync bridge: CLKOUT shifted by ft_phase * 22.5 degrees (1.04 ns steps).
+    wire       fclk;
+    wire       fpll_lock;
+    wire [3:0] ft_phase;
+    generate
+        if (FT_PLL) begin : g_fpll
+            rPLL #(
+                .FCLKIN("60"), .IDIV_SEL(0), .FBDIV_SEL(0), .ODIV_SEL(8), .DYN_DA_EN("true"),
+                .DEVICE("GW1NR-9C")
+            ) u_fpll (
+                .CLKIN(fclk_raw), .CLKFB(1'b0), .RESET(1'b0), .RESET_P(1'b0),
+                .FBDSEL(6'd0), .IDSEL(6'd0), .ODSEL(6'd0),
+                .PSDA(ft_phase), .DUTYDA(ft_phase + 4'd8), .FDLY(4'd0),     // falling edge: 50 % duty
+                .CLKOUT(), .CLKOUTP(fclk), .LOCK(fpll_lock), .CLKOUTD(), .CLKOUTD3()
+            );
+        end else begin : g_nofpll
+            assign fclk      = fclk_raw;
+            assign fpll_lock = 1'b1;
+        end
+    endgenerate
     wire [2:0] ftx_s;
     sync2 #(.W(3)) u_ftx (.clk(clk), .d({ftog, ft_siwu_n, ft_oe_n}), .q(ftx_s));
     reg        clk_prev;
@@ -152,7 +202,8 @@ module top #(
     wire       ftx_pop;
     reg        active_port;   // 0 = UART, 1 = FT232H
 
-    ft245_async u_ft (
+    ft245_async #(.T_STROBE(3 * ((CLK_HZ + 13_500_000) / 27_000_000)),
+                  .T_RECOVER(5 * ((CLK_HZ + 13_500_000) / 27_000_000))) u_ft (
         .clk(clk), .rst(rst || sync_mode), .rxf_n_s(rxf_n_s), .txe_n_s(txe_n_s),
         .d_in(ft_d), .d_out(fta_d_out), .d_oe(fta_d_oe), .rd_n(fta_rd_n), .wr_n(fta_wr_n),
         .rx_space(rxf_level < ((1 << RX_AW) - 8)),
@@ -163,7 +214,7 @@ module top #(
     // ------------------------------------------------------------ FT245 sync (CLKOUT domain)
     reg  [2:0] frst_s = 3'b111;          // reset held until sync mode is seen
     always @(posedge fclk)
-        frst_s <= {frst_s[1:0], rst || !sync_mode};
+        frst_s <= {frst_s[1:0], rst || !sync_mode || !fpll_lock};
     wire frst = frst_s[2];
 
     // host -> FPGA: sync bridge -> dual-clock FIFO -> main RX FIFO
@@ -241,13 +292,16 @@ module top #(
     wire       e_cle, e_ale, e_we, e_re, e_ce, e_wp_hi, e_io_oe, e_nand_park;
     wire [7:0] e_io_o;
     wire       e_cs, e_sck, e_mosi, e_io2_hi, e_io3_hi, e_spi_park, e_qin;
+    wire [1:0] e_qout;
+    wire [3:0] e_qdat;
     wire       nand_act, spi_act, err;
     wire [2:0] t_mode;
     wire [4:0] t_sel;
     wire       t_val;
     wire [20:0] t_lv;
 
-    engine #(.CLK_HZ(CLK_HZ), .BAUD_DIV_DEFAULT(BAUD_DIV), .RX_AW(RX_AW)) u_eng (
+    engine #(.CLK_HZ(CLK_HZ), .BAUD_DIV_DEFAULT(BAUD_DIV), .RX_AW(RX_AW),
+             .FT_PHASE_DEFAULT(FT_PHASE_DEFAULT), .PH_WD_MS(PH_WD_MS)) u_eng (
         .clk(clk), .rst(rst),
         .rx_valid(rxf_valid), .rx_data(rxf_dout), .rx_pop(rxf_rd),
         .tx_full(txf_full), .tx_room(txf_level < ((1 << TX_AW) - 16)), .tx_push(txf_wr), .tx_data(txf_din), .tx_drained(tx_drained),
@@ -256,10 +310,11 @@ module top #(
         .nand_io_i(nand_io), .nand_rb(rb_s), .nand_park(e_nand_park),
         .spi_cs_act(e_cs), .spi_sck(e_sck), .spi_mosi(e_mosi),
         .spi_io_i({spi_io3, spi_io2, spi_io1, spi_io0}), .spi_qin(e_qin),
+        .spi_qout(e_qout), .spi_qdat(e_qdat),
         .spi_io2_hi(e_io2_hi), .spi_io3_hi(e_io3_hi), .spi_park(e_spi_park),
         .baud_div(baud_div), .active_port(active_port), .ft_status(ft_status),
         .rx_overflow(rx_overflow),
-        .test_mode(t_mode), .test_sel(t_sel), .test_val(t_val), .test_lv(t_lv),
+        .test_mode(t_mode), .test_sel(t_sel), .test_val(t_val), .test_lv(t_lv), .ft_phase(ft_phase),
         .nand_activity(nand_act), .spi_activity(spi_act), .err_led(err)
     );
 
@@ -289,12 +344,15 @@ module top #(
 
     // Normal-mode output enables and values, then one tri-state per pin.
     wire [20:0] n_oe = {
-        !(e_spi_park || e_qin), !(e_spi_park || e_qin), 1'b0, !(e_spi_park || e_qin),
+        !(e_spi_park || e_qin), !(e_spi_park || e_qin),
+        !e_spi_park && !e_qin && (e_qout != 2'd0),                 // IO1 = MISO unless a wide write
+        !(e_spi_park || e_qin),
         !e_spi_park, !e_spi_park,
         1'b0, !e_nand_park, !e_nand_park, !e_nand_park, !e_nand_park, !e_nand_park, !e_nand_park,
         {8{e_io_oe && !e_nand_park}}};
     wire [20:0] n_o = {
-        e_io3_hi, e_io2_hi, 1'b1, e_mosi,
+        (e_qout == 2'd2) ? e_qdat[3] : e_io3_hi, (e_qout == 2'd2) ? e_qdat[2] : e_io2_hi,
+        e_qdat[1], (e_qout != 2'd0) ? e_qdat[0] : e_mosi,
         e_sck, ~e_cs,
         1'b1, e_wp_hi, ~e_ce, ~e_re, ~e_we, e_ale, e_cle,
         e_io_o};

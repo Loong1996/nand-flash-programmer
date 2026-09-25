@@ -186,6 +186,7 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
 .li.tap:hover { background: var(--fill2); }
 .li.tap:first-child { border-radius: 24px 24px 0 0; } .li.tap:last-child { border-radius: 0 0 24px 24px; }
 .li.tap:only-child { border-radius: 24px; }
+.menu .li.on { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .chev { width: 14px; height: 14px; color: var(--label3); stroke-width: 2.4; }
 
 .field { border: 0; background: transparent; outline: none; text-align: right; width: 140px; color: var(--label2); padding: 6px 0; }
@@ -358,6 +359,19 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
         transition: all .3s var(--spring); background: var(--glass-thin); }
 .drop:hover, .drop.over { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); transform: scale(1.01); }
 .drop .ic { width: 34px; height: 34px; stroke-width: 1.5; display: block; margin: 0 auto 6px; }
+.drop.small { padding: 12px; border-radius: 18px; margin-top: 10px; font-size: 13px; }
+.drop.small .ic { width: 22px; height: 22px; margin-bottom: 2px; }
+.rt { margin-top: 12px; }
+.rt h4 { margin: 0 0 6px; font-size: 13px; color: var(--label2); font-weight: 600; }
+.rt-wrap { max-height: 340px; overflow: auto; border-radius: 14px; background: var(--fill3); }
+.rt table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rt th { position: sticky; top: 0; background: var(--glass-strong); backdrop-filter: blur(12px); text-align: left;
+         font-weight: 600; color: var(--label2); padding: 7px 10px; white-space: nowrap; }
+.rt td { padding: 6px 10px; border-top: 0.5px solid var(--sep); font-family: var(--mono); vertical-align: top; white-space: nowrap; }
+.rt td.w { white-space: normal; overflow-wrap: anywhere; min-width: 160px; }
+.rt td a { color: var(--accent); text-decoration: none; }
+.rt td a:hover { text-decoration: underline; }
+.rt .more { font-size: 12px; color: var(--label3); padding: 6px 2px; }
 .drop b { color: var(--label); }
 .drop.has { border-style: solid; border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 
@@ -685,12 +699,23 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
 
     <div>
       <div class="sec-h">引脚诊断 <button class="btn sm" id="btnPins" style="margin-left:auto"><svg class="ic"><use href="#i-pulse"/></svg>读取引脚</button>
-        <a class="btn sm" href="#/wiring" id="btnDoctorGo"><svg class="ic"><use href="#i-stetho"/></svg>接线自检</a></div>
+        <a class="btn sm" href="#/wiring" id="btnDoctorGo"><svg class="ic"><use href="#i-stetho"/></svg>接线自检</a>
+        <a class="btn sm" href="#/help"><svg class="ic"><use href="#i-warn"/></svg>排障</a></div>
       <div class="glass card">
         <div class="pins" id="pins"><div class="muted">连接后读取引脚电平，用来检查杜邦线接线。</div></div>
         <div class="sec-f" style="margin:12px 0 0">不插芯片时：数据线 IO0–7 应全亮（上拉为 1），R/B# 就绪。某一位不亮多半是那根线松了或接错了。</div>
       </div>
     </div>
+  </div>
+</section>
+
+<!-- ================================================================ 排障 -->
+<section class="page" id="page-help">
+  <div class="ph"><div><div class="eyebrow">选现象 → 自动检查 → 按提示修</div><h1>排障</h1></div></div>
+  <div class="grid g2">
+    <div><div class="sec-h">遇到了什么问题？</div><div class="glass list menu" id="helpList"></div>
+      <div class="sec-f">自动检查会用到编程器（连接后才能测接线和芯片）；“找不到编程器”和“FT232H”两项不连接也能查。</div></div>
+    <div id="helpPane"><div class="glass card muted" style="padding:22px">在左边选一个现象。</div></div>
   </div>
 </section>
 
@@ -703,7 +728,8 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
   <div class="print-only"><h2 style="margin:0 0 6px">nsprog 接线表</h2>
     <p style="margin:0 0 12px;font-size:12px">Tang Nano 9K 的 79–86 脚是 1.8V，不要接。68–75 脚与 HDMI/屏幕座共用，接线时不要插 HDMI 线和屏幕。FT232H 只共地，不接它的电源。</p></div>
   <div id="docCard" class="hidden no-print" style="margin-bottom:18px">
-    <div class="sec-h">自检结果 <span class="pill" id="docSummary" style="margin-left:auto"></span></div>
+    <div class="sec-h">自检结果 <span class="pill" id="docSummary" style="margin-left:auto"></span>
+      <a class="btn sm hidden" id="docHelp" href="#/help/no-chip"><svg class="ic"><use href="#i-warn"/></svg>排障向导</a></div>
     <div class="glass list docres" id="docList"></div>
   </div>
   <div class="screen-only" style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:14px">
@@ -831,6 +857,7 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
   <div class="grid g2">
     <div>
       <div class="drop" id="toolDrop"><svg class="ic"><use href="#i-folder"/></svg><span id="toolFile">把镜像文件拖到这里，或 <b>点击选择</b></span></div>
+      <div class="drop small" id="toolDrop2"><svg class="ic"><use href="#i-layers"/></svg><span id="toolFile2">镜像对比用的第二个文件（B）</span></div>
       <div class="sec-h">几何参数</div>
       <div class="glass list">
         <div class="li"><div class="li-l"><div class="t">填入</div></div><span class="pop"><select id="geoPreset"></select></span></div>
@@ -855,6 +882,8 @@ main { margin-left: 284px; padding: 30px 40px 140px; max-width: 1180px; }
       <div class="tiles" style="grid-template-columns:repeat(3,minmax(0,1fr))" id="toolTiles1"></div>
       <div class="sec-h">ECC 与 UBI</div>
       <div class="tiles" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="toolTiles2"></div>
+      <div class="sec-h">分析</div>
+      <div class="tiles" style="grid-template-columns:repeat(2,minmax(0,1fr))" id="toolTiles3"></div>
       <div class="sec-h">结果</div>
       <div class="jobpanel" data-scope="tools"></div>
     </div>
@@ -1022,6 +1051,7 @@ window.addEventListener('resize', () => { refreshSegs(); hexLayout(); drawBad();
 const PAGES = [
   {id: 'device', t: '设备', i: 'plug', c: 'blue', tab: 1},
   {id: 'wiring', t: '接线', i: 'cable', c: 'red'},
+  {id: 'help', t: '排障', i: 'warn', c: 'orange'},
   {id: 'chip', t: '芯片', i: 'chip', c: 'indigo', tab: 1},
   {id: 'rw', t: '读写', i: 'rw', c: 'green', tab: 1},
   {id: 'data', t: '数据', i: 'hex', c: 'orange', tab: 1},
@@ -1032,7 +1062,7 @@ const PAGES = [
 ];
 let page = 'device';
 $('nav').innerHTML = PAGES.map((p, k) => `<a href="#/${p.id}" data-p="${p.id}"><span class="sq ${p.c}">${ic(p.i)}</span>${p.t}` +
-  `${p.id === 'history' ? '<span class="badge" id="histBadge"></span>' : ''}${p.id === 'chip' ? '<span class="badge" id="chipBadge"></span>' : ''}<span class="kbd">⌘${k + 1}</span></a>`).join('');
+  `${p.id === 'history' ? '<span class="badge" id="histBadge"></span>' : ''}${p.id === 'chip' ? '<span class="badge" id="chipBadge"></span>' : ''}${k < 9 ? `<span class="kbd">⌘${k + 1}</span>` : ''}</a>`).join('');
 $('tabbar').innerHTML = PAGES.filter(p => p.tab).map(p => `<a href="#/${p.id}" data-p="${p.id}">${ic(p.i)}${p.t}</a>`).join('') +
   `<a href="#" data-p="more" id="tabMore">${ic('more')}更多</a>`;
 $('tabMore').onclick = e => {
@@ -1043,6 +1073,8 @@ $('tabMore').onclick = e => {
     e2 => { const r = e2.target.closest('[data-go]'); if (r) { closeSheet(null); location.hash = '#/' + r.dataset.go; } });
 };
 function showPage(id) {
+  const arg = id.split('/')[1] || '';
+  id = id.split('/')[0];
   if (!PAGES.some(p => p.id === id)) id = 'device';
   page = id;
   $$('.page').forEach(s => s.classList.toggle('on', s.id === 'page-' + id));
@@ -1051,6 +1083,7 @@ function showPage(id) {
   if (id === 'history') loadHistory();
   if (id === 'lib' && !libLoaded) loadLib();
   if (id === 'wiring') wiringShow(); else wiringHide();
+  if (id === 'help') helpShow(arg);
   window.scrollTo({top: 0});
 }
 window.addEventListener('hashchange', () => showPage(location.hash.replace(/^#\/?/, '')));
@@ -1064,7 +1097,8 @@ document.addEventListener('keydown', e => {
 let S = null, target = null, settingsInit = false, lastJobState = null, lastJobKey = '', speed = {t: 0, d: 0, v: 0};
 const OPS = {read: '读取', write: '写入', verify: '校验', erase: '擦除', blank: '查空', badblocks: '坏块扫描',
   'tool:info': '镜像信息', 'tool:strip': '去除 OOB', 'tool:merge': '添加 OOB', 'tool:ecc_check': 'ECC 检查', 'tool:ecc_fix': 'ECC 纠错',
-  'tool:ubi_info': 'UBI 信息', 'tool:ubi_extract': 'UBI 提取'};
+  'tool:ubi_info': 'UBI 信息', 'tool:ubi_extract': 'UBI 提取', 'tool:scan': '分区与头部', 'tool:diff': '镜像对比',
+  'tool:fs_list': '浏览文件系统', 'tool:fs_extract': '导出文件系统'};
 const PHASES = {read: '读取中', write: '写入中', erase: '擦除中', verify: '校验中', blank: '查空中', scan: '扫描坏块'};
 const STATES = {running: '进行中', done: '完成', failed: '失败', cancelled: '已取消'};
 const RATE_OPS = ['read', 'write', 'verify', 'blank'];
@@ -1419,7 +1453,8 @@ function renderJob(j) {
     }
     p.querySelector('.jp-stats').innerHTML = stats.join('');
     p.querySelector('.jp-cancel').classList.toggle('hidden', !running);
-    p.querySelector('.jp-report').innerHTML = j && j.report ? `<div class="report ${j.report.ok ? 'ok' : 'bad'}">${esc(j.report.summary)}</div>` : '';
+    p.querySelector('.jp-report').innerHTML = j && j.report ? `<div class="report ${j.report.ok ? 'ok' : 'bad'}">${esc(j.report.summary)}</div>` +
+      reportTables(j.report.extra && j.report.extra.tables) : '';
     let acts = '';
     if (j && j.download && j.state === 'done') acts = `<a class="btn filled sm" href="${j.download}" download>${ic('down')}下载 ${esc(S.result ? S.result.name : '')}</a>` +
       `<a class="btn sm" href="#/data">${ic('eye')}查看数据</a>`;
@@ -1627,6 +1662,17 @@ $('bbCanvas').addEventListener('mousemove', e => {
 $('bbCanvas').addEventListener('mouseleave', () => $('bbTip').classList.add('hidden'));
 $('badScan').onclick = () => { if (target && S[target]) { speed = {t: 0, d: 0, v: 0}; api('/api/job/badblocks?target=' + target, {method: 'POST'}).then(render).catch(fail); } };
 
+function reportTables(tables) {       // [{title, cols, rows}] from offline tools; a cell may be {text, href}
+  if (!tables || !tables.length) return '';
+  const cell = c => c && typeof c === 'object' ? (c.href ? `<a href="${esc(c.href)}" download>${esc(c.text)}</a>` : esc(c.text)) : esc(String(c ?? ''));
+  return tables.map(t => {
+    const rows = t.rows || [], shown = rows.slice(0, 2000);
+    return `<div class="rt"><h4>${esc(t.title || '')} · ${rows.length}</h4><div class="rt-wrap"><table><thead><tr>${t.cols.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>` +
+      `<tbody>${shown.map(r => `<tr>${r.map((c, i) => `<td${i === (t.wrap ?? t.cols.length - 1) ? ' class="w"' : ''}>${cell(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` +
+      (rows.length > shown.length ? `<div class="more">只显示前 ${shown.length} 行</div>` : '') + '</div>';
+  }).join('');
+}
+
 /* ======================================================================
    Tools page
    ====================================================================== */
@@ -1651,8 +1697,21 @@ const TOOLS2 = [
   {t: 'ecc_fix', n: 'ECC 纠错', s: '纠正位翻转后输出新镜像', i: 'wand', c: 'purple'},
   {t: 'ubi_info', n: 'UBI 信息', s: '卷表、擦写次数', i: 'layers', c: 'teal'},
   {t: 'ubi_extract', n: 'UBI 提取', s: '按卷导出为 zip', i: 'box', c: 'pink'}];
+const TOOLS3 = [
+  {t: 'scan', n: '分区与头部', s: 'mtdparts、设备树、U-Boot 环境、uImage/FIT', i: 'search', c: 'orange'},
+  {t: 'diff', n: '镜像对比', s: '逐页比较 A 与 B，区分位翻转和真实改动', i: 'layers', c: 'red'},
+  {t: 'fs_list', n: '浏览文件系统', s: 'SquashFS、JFFS2、UBIFS，点文件名下载', i: 'folder', c: 'green'},
+  {t: 'fs_extract', n: '导出文件系统', s: '全部文件打包为 zip', i: 'down', c: 'blue'}];
 const toolTile = x => `<button class="glass tile" data-tool="${x.t}"><span class="ti sq ${x.c}">${ic(x.i)}</span><b>${x.n}</b><small>${x.s}</small></button>`;
 $('toolTiles1').innerHTML = TOOLS1.map(toolTile).join(''); $('toolTiles2').innerHTML = TOOLS2.map(toolTile).join('');
+$('toolTiles3').innerHTML = TOOLS3.map(toolTile).join('');
+let toolFile2 = null;
+function setToolFile2(f) {
+  toolFile2 = f;
+  $('toolDrop2').classList.toggle('has', !!f);
+  $('toolFile2').innerHTML = f ? `B：<b>${esc(f.name)}</b> <span class="muted">${fmtSize(f.size)}</span>` : '镜像对比用的第二个文件（B）';
+}
+dropZone($('toolDrop2'), setToolFile2, () => pickFile(setToolFile2));
 function setToolFile(f) {
   toolFile = f;
   $('toolDrop').classList.toggle('has', !!f);
@@ -1673,7 +1732,12 @@ async function runTool(t) {
   if ($('eccOff').value) p.set('ecc_offset', $('eccOff').value);
   if ($('ubiPeb').value) p.set('peb', $('ubiPeb').value);
   if (t === 'merge' && +$('geoOob').value === 0) { toast('添加 OOB 需要 OOB 大小 > 0', 'warn'); return; }
-  try { render(await api('/api/tools/' + t + '?' + p, {method: 'POST', body: await toolFile.arrayBuffer()})); }
+  let body = toolFile;
+  if (t === 'diff') {
+    if (!toolFile2) { toast('再选择要对比的第二个文件（B）', 'warn'); pickFile(f => { setToolFile2(f); runTool(t); }); return; }
+    p.set('split', toolFile.size); body = new Blob([toolFile, toolFile2]);
+  }
+  try { render(await api('/api/tools/' + t + '?' + p, {method: 'POST', body: await body.arrayBuffer()})); }
   catch (e) { fail(e); }
 }
 $('page-tools').addEventListener('click', e => { const b = e.target.closest('[data-tool]'); if (b) runTool(b.dataset.tool); });
@@ -1926,6 +1990,7 @@ $('docRun').onclick = async () => {
     $('docCard').classList.remove('hidden');
     const worst = r.checks.some(c => c.status === 'fail') ? 'red' : r.checks.some(c => c.status === 'warn') ? 'orange' : 'green';
     $('docSummary').className = 'pill ' + worst; $('docSummary').textContent = r.summary;
+    $('docHelp').classList.toggle('hidden', worst === 'green');
     $('docList').innerHTML = r.checks.map(c => {
       const [col, i] = DOC_ST[c.status] || DOC_ST.info;
       return `<div class="m"><span class="st sq ${col}">${ic(i)}</span><div style="min-width:0">
@@ -1937,6 +2002,73 @@ $('docRun').onclick = async () => {
   } catch (e) { fail(e); }
   finally { b.disabled = false; b.innerHTML = ic('stetho') + '一键自检'; }
 };
+/* ======================================================================
+   Troubleshooting
+   ====================================================================== */
+let HELP = null, helpSel = '';
+const helpKey = id => 'nsprog.help.' + id;
+async function helpShow(id) {
+  if (!HELP) { try { HELP = (await api('/api/troubleshoot')).symptoms; } catch (e) { fail(e); return; } }
+  $('helpList').innerHTML = HELP.map(x => `<div class="li ico tap${x.id === (id || helpSel) ? ' on' : ''}" data-help="${x.id}">
+    <span class="sq ${x.needs_device ? 'orange' : 'blue'}">${ic(x.needs_device ? 'warn' : 'plug')}</span>
+    <div class="li-l"><div class="t">${esc(x.title)}</div><div class="s">${esc(x.summary)}</div></div>${ic('arrow', 'chev')}</div>`).join('');
+  if (id) helpOpen(id);
+}
+function helpChecks(id) { try { return JSON.parse(localStorage.getItem(helpKey(id)) || '[]'); } catch (e) { return []; } }
+function helpOpen(id, results) {
+  const x = HELP && HELP.find(h => h.id === id);
+  if (!x) return;
+  helpSel = id;
+  $$('#helpList [data-help]').forEach(el => el.classList.toggle('on', el.dataset.help === id));
+  const done = helpChecks(id);
+  let res = '';
+  if (results) {
+    const col = {ok: 'green', warn: 'orange', fail: 'red'}[results.verdict];
+    res = `<div class="sec-h">自动检查结果 <span class="pill ${col}" style="margin-left:auto">${{ok: '没有发现问题', warn: '有需要注意的地方', fail: '发现问题'}[results.verdict]}</span></div>
+      <div class="glass list docres">${results.findings.map(f => {
+        const [c, i] = DOC_ST[f.status] || DOC_ST.info;
+        return `<div class="m"><span class="st sq ${c}">${ic(i)}</span><div style="min-width:0"><div class="t" style="font-weight:600">${esc(f.title)}</div>
+          <div class="d">${esc(f.detail)}</div>${f.fix && f.status !== 'ok' ? `<div class="h">→ ${esc(f.fix)}</div>` : ''}</div></div>`;
+      }).join('')}</div>`;
+  }
+  $('helpPane').innerHTML = `<div class="sec-h">${esc(x.title)}</div>
+    <div class="glass card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px"><div style="font-weight:600">自动检查</div><div class="muted" style="font-size:13px">${x.needs_device ? '读芯片 ID、接线自检、R/B#、写保护等（需要已连接）' : '检查电脑上的串口、FT232H 和烧写工具'}</div></div>
+      <button class="btn filled" id="helpRun">${ic('stetho')}开始检查</button></div>
+    ${res}
+    ${id === 'ft232h' ? `<div class="sec-h">同步 FIFO 调相</div>
+    <div class="glass card" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <div style="flex:1;min-width:180px"><div style="font-weight:600">扫描 16 档时钟相位</div><div class="muted" style="font-size:13px">先用“FT232H 同步 FIFO”连接（固件 1.3）。逐档测试后取可用窗口的中点并保存，以后连接自动使用；坏相位 1 秒后自动退回，约需半分钟。</div></div>
+      <button class="btn" id="helpTune">${ic('refresh')}扫描相位</button></div>
+    <div id="helpTuneRes"></div>` : ''}
+    <div class="sec-h">逐项确认 <span class="muted" style="margin-left:auto;font-weight:400">${done.length}/${x.steps.length}</span></div>
+    <div class="glass list">${x.steps.map((st, k) => `<label class="li tap"><input type="checkbox" data-step="${k}" ${done.includes(k) ? 'checked' : ''} style="width:18px;height:18px;flex:none">
+      <div class="li-l"><div class="t" style="font-weight:400;white-space:normal">${esc(st)}</div></div></label>`).join('')}</div>
+    <div class="sec-f">勾选保存在这台电脑的浏览器里。还不行的话，把“自动检查结果”截图和 nsprog info 的输出发给我们。</div>`;
+  $('helpRun').onclick = async () => {
+    const b = $('helpRun'); b.disabled = true; b.innerHTML = ic('refresh') + '检查中…';
+    try { helpOpen(id, await post('/api/troubleshoot', {symptom: id})); }
+    catch (e) { fail(e); b.disabled = false; b.innerHTML = ic('stetho') + '开始检查'; }
+  };
+  if ($('helpTune')) $('helpTune').onclick = async () => {
+    const b = $('helpTune'); b.disabled = true; b.innerHTML = ic('refresh') + '扫描中…';
+    try {
+      const r = await post('/api/ft232h/tune', {});
+      const cells = r.results.map(x => `<span title="${x.phase}: ${esc(x.error || 'OK')}" style="display:inline-block;width:18px;height:18px;border-radius:5px;margin:1px;background:var(--${x.phase === r.best ? 'accent' : x.ok ? 'green' : 'red'})"></span>`).join('');
+      $('helpTuneRes').innerHTML = `<div class="glass card" style="margin-top:10px"><div>${cells}</div>
+        <div class="muted" style="font-size:13px;margin-top:8px">${r.best == null ? '所有相位都失败：检查 FT232H 接线，或改用异步模式。' :
+          `可用 ${r.window.length}/16 档，已选相位 ${r.best}（${(r.best * 22.5).toFixed(1)}°）并保存${r.window.length < 4 ? '；窗口很窄，建议缩短连线、多接几根地线' : ''}。`}</div></div>`;
+    } catch (e) { fail(e); }
+    b.disabled = false; b.innerHTML = ic('refresh') + '扫描相位';
+  };
+  $('helpPane').querySelectorAll('[data-step]').forEach(cb => cb.onchange = () => {
+    const cur = new Set(helpChecks(id)); cb.checked ? cur.add(+cb.dataset.step) : cur.delete(+cb.dataset.step);
+    try { localStorage.setItem(helpKey(id), JSON.stringify([...cur])); } catch (e) { /* private mode */ }
+    helpOpen(id, results);
+  });
+}
+$('helpList').addEventListener('click', e => { const r = e.target.closest('[data-help]'); if (r) location.hash = '#/help/' + r.dataset.help; });
+
 $('wirePrint').onclick = async () => {
   await wiringLoad();
   const done = wireDone();

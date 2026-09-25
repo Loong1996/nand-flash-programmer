@@ -17,7 +17,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -234,6 +234,8 @@ class SpiNorChip:
     quad_cmd: Optional[int] = None      # 1-1-4 fast read (from SFDP)
     quad_dummy: int = 8
     qer: int = 0                        # SFDP quad enable requirement
+    #: dual / quad fast reads from SFDP: name -> (opcode, mode clocks, dummy clocks)
+    read_modes: Dict[str, Tuple[int, int, int]] = field(default_factory=dict)
 
     @property
     def linear(self) -> bool:

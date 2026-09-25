@@ -43,6 +43,7 @@ class Device:
         self._info: Optional[P.Info] = None
         self._marker = 0
         self.pin_ctrl = P.PIN_CTRL_DEFAULT
+        self.ft_phase: Optional[int] = None      # sync FIFO clock phase set by this session
         self.cancelled: Callable[[], bool] = lambda: False
 
     # ------------------------------------------------------------ setup
@@ -108,6 +109,10 @@ class Device:
             last_err = "no response (got %r)" % buf[:32]
         raise ProtocolError("programmer not responding on %s: %s" % (self.link.name, last_err))
 
+    def _clk(self) -> int:
+        """Engine clock (27 MHz before gateware 1.3, 54 MHz with the PLL)."""
+        return self.info.clk_hz if self._info is not None else CLK_HZ
+
     def negotiate_baud(self, candidates: Optional[List[int]] = None) -> int:
         """Try faster UART rates; the engine falls back on its own if one fails."""
         env = os.environ.get("NSPROG_BAUD")
@@ -120,7 +125,7 @@ class Device:
         return self.link.baudrate or DEFAULT_BAUD
 
     def _try_baud(self, baud: int) -> bool:
-        div = round(CLK_HZ / baud)
+        div = round(self._clk() / baud)
         self.link.write(bytes([P.SET_BAUD]) + div.to_bytes(2, "little"))
         ack = self.link.read(1, 1.0)
         if ack != bytes([P.BAUD_ACK]):
@@ -247,7 +252,7 @@ class Device:
             self.run(b)
             rate = self.link.baudrate
             if rate is not None and rate != DEFAULT_BAUD:
-                div = round(CLK_HZ / DEFAULT_BAUD)
+                div = round(self._clk() / DEFAULT_BAUD)
                 self.link.write(bytes([P.SET_BAUD]) + div.to_bytes(2, "little"))
                 self.link.read(1, 0.5)
         except Exception:
@@ -256,13 +261,15 @@ class Device:
 
 
 def connect(port: Optional[str] = None, *, emulate: Optional[str] = None,
-            negotiate: bool = True) -> Device:
+            negotiate: bool = True, ft_phase: bool = True) -> Device:
     """Open a programmer.
 
     ``port``: serial port path, ``"ft232h"``/``ftdi://...`` for the FT232H
     async FIFO, ``"ft232h-sync"`` (or a URL ending in ``+sync``) for the 245
     synchronous FIFO, or None to auto-detect (FT232H first, then likely serial
     ports).
+    ``ft_phase``: on the sync FIFO link, apply the clock phase saved by
+    ``nsprog ft232h-tune``.
     ``emulate``: use the built-in software emulator (e.g. ``"nand"``,
     ``"spinor"``, ``"spinand"``, ``"all"``).
     """
@@ -289,6 +296,10 @@ def connect(port: Optional[str] = None, *, emulate: Optional[str] = None,
                 raise LinkError("%s. In sync FIFO mode the FPGA needs CLKOUT (FT232H AC5) on "
                                 "pin 36 and gateware >= 1.1; try port 'ft232h' (async)" % e) from e
             raise
+        if sync and ft_phase:
+            from .ft232h import apply_saved_phase
+
+            apply_saved_phase(dev)
         return dev
 
     if port:

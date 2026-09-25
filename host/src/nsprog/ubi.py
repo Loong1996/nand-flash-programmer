@@ -16,6 +16,7 @@ EC_MAGIC = b"UBI#"
 VID_MAGIC = b"UBI!"
 LAYOUT_VOL_ID = 0x7FFFEFFF
 VTBL_RECORD = 172
+MAX_VOLUMES = 128
 
 
 def _crc(data: bytes) -> int:
@@ -65,7 +66,8 @@ class UbiImage:
 
 
 def _guess_peb(f: BinaryIO, size: int) -> int:
-    for peb in (128 * 1024, 256 * 1024, 64 * 1024, 512 * 1024, 16 * 1024, 32 * 1024,
+    # Smallest first: with 16 KiB PEBs there is also an EC header at 128 KiB.
+    for peb in (16 * 1024, 32 * 1024, 64 * 1024, 128 * 1024, 256 * 1024, 512 * 1024,
                 1024 * 1024, 2048 * 1024):
         if size < 2 * peb:
             continue
@@ -120,10 +122,10 @@ def parse(f: BinaryIO, peb_size: Optional[int] = None) -> UbiImage:
             v.lebs[lnum] = (p, sqnum, data_size)
     if layout:
         vtbl = layout[min(layout)][1]
-        for i in range(len(vtbl) // VTBL_RECORD):
+        for i in range(min(MAX_VOLUMES, len(vtbl) // VTBL_RECORD)):
             rec = vtbl[i * VTBL_RECORD:(i + 1) * VTBL_RECORD]
             reserved, align, pad = struct.unpack(">III", rec[0:12])
-            if reserved == 0:
+            if reserved == 0 or _crc(rec[:168]) != struct.unpack(">I", rec[168:172])[0]:
                 continue
             vtype = "dynamic" if rec[12] == 1 else "static"
             name_len = struct.unpack(">H", rec[14:16])[0]
@@ -135,27 +137,32 @@ def parse(f: BinaryIO, peb_size: Optional[int] = None) -> UbiImage:
     return img
 
 
+def volume_data(f: BinaryIO, img: UbiImage, v: Volume) -> bytes:
+    """Contents of a volume: used LEBs in order, unmapped LEBs (up to the last used one) as 0xFF."""
+    leb = img.leb_size - v.data_pad
+    out = bytearray()
+    if v.lebs:
+        for lnum in range(max(v.lebs) + 1):
+            if lnum not in v.lebs:
+                out += b"\xff" * leb
+                continue
+            peb, _sq, dsize = v.lebs[lnum]
+            f.seek(peb * img.peb_size + img.data_offset)
+            n = dsize if v.vol_type == "static" and dsize else leb
+            out += f.read(n)
+    return bytes(out)
+
+
 def extract(f: BinaryIO, img: UbiImage, outdir: str, vol_ids: Optional[List[int]] = None) -> List[str]:
-    """Write each volume to ``outdir/<name>.bin`` (dynamic volumes: all used LEBs in order,
-    unmapped LEBs are filled with 0xFF up to the last used one)."""
+    """Write each volume to ``outdir/<name>.bin`` (see :func:`volume_data`)."""
     os.makedirs(outdir, exist_ok=True)
     written = []
     for v in sorted(img.volumes.values(), key=lambda v: v.vol_id):
         if vol_ids and v.vol_id not in vol_ids:
             continue
-        leb = img.leb_size - v.data_pad
         path = os.path.join(outdir, "%s.bin" % (v.name.replace("/", "_") or "vol%d" % v.vol_id))
         with open(path, "wb") as out:
-            if v.lebs:
-                last = max(v.lebs)
-                for lnum in range(last + 1):
-                    if lnum not in v.lebs:
-                        out.write(b"\xff" * leb)
-                        continue
-                    peb, _sq, dsize = v.lebs[lnum]
-                    f.seek(peb * img.peb_size + img.data_offset)
-                    n = dsize if v.vol_type == "static" and dsize else leb
-                    out.write(f.read(n))
+            out.write(volume_data(f, img, v))
         written.append(path)
     return written
 
@@ -171,4 +178,7 @@ def detect_content(path: str) -> str:
         return "U-Boot uImage"
     if head == b"\xd0\x0d\xfe\xed":
         return "FDT/FIT"
+    if head in (b"\x85\x19\x01\xe0", b"\x85\x19\x02\xe0", b"\x85\x19\x03\x20", b"\x19\x85\xe0\x01",
+                b"\x19\x85\xe0\x02", b"\x19\x85\x20\x03"):
+        return "JFFS2"
     return "data"
